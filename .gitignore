@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+
+# JWST / CRDS / science data
+work/
+data/
+crds_cache/
+*.fits
+*.fits.gz
+*.asdf
+*.ecsv
+
+# Logs and generated manifests outside examples
+*.log

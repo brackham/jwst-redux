@@ -1,0 +1,26 @@
+project:
+  name: toi3884-soss
+
+query:
+  target: TOI-3884
+  instrument: NIRISS
+  exposure_type: NIS_SOSS
+  proposal_id: null
+  observation_id: null
+  visit_id: null
+
+products:
+  start_from: uncal
+
+pipeline:
+  stages: auto
+  crds_context: latest
+  overrides: {}
+
+output:
+  root: ./work/toi3884
+  save_intermediate: true
+
+options:
+  overwrite: false
+  dry_run: false

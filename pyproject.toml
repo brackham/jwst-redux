@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jwst-redux"
+version = "0.1.0.dev0"
+description = "A thin orchestration layer for retrieving JWST data from MAST and running the official JWST calibration pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  {name = "Benjamin V. Rackham"}
+]
+dependencies = [
+  "astroquery",
+  "astropy",
+  "jwst",
+  "PyYAML",
+  "typer>=0.12",
+  "rich",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov",
+  "ruff",
+]
+
+[project.scripts]
+jwst-redux = "jwst_redux.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
