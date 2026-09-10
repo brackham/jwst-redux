@@ -18,7 +18,12 @@ standard calibrated products.
 - Keep target-specific information in YAML configuration, not Python source.
 - Prefer official `astroquery.mast`, `jwst`, and CRDS behavior over custom reimplementations.
 - Determine pipeline paths from observation metadata wherever practical.
+- Keep scientific datasets distinct from exposure-level MAST records and their segment products.
+- Define scientific dataset boundaries by observing mode; do not treat `visit_id` as a universal key.
 - Treat Stage 3 associations/groups explicitly; do not assume every file is processed independently.
+- When Stage 3 association creation is implemented, use an appropriate official archived association
+  or generate one with the official `jwst.associations` machinery. Do not invent a custom association
+  format.
 - Make every operation resumable and idempotent by default.
 - Never overwrite or reprocess completed products unless explicitly requested.
 - Provide a dry-run / plan mode before large downloads or expensive reductions.

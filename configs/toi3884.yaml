@@ -3,9 +3,14 @@ project:
 
 query:
   target: TOI-3884
+  target_match: mast_targname
+  archive_target_names:
+    - TOI-3884
+    - TOI-3884b
   instrument: NIRISS
   exposure_type: NIS_SOSS
-  proposal_id: null
+  # null searches all proposals; a single ID or a list of IDs may be supplied.
+  proposal_ids: null
   observation_id: null
   visit_id: null
 
@@ -24,3 +29,6 @@ output:
 options:
   overwrite: false
   dry_run: false
+
+# The first future Stage 1 smoke test is intentionally narrower than discovery:
+# jw05799001001_04101_00001-seg001_nis_uncal.fits only.

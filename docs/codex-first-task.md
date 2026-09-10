@@ -25,7 +25,8 @@ or segments correctly, and print the proposed official JWST pipeline path for ea
 1. Use `astroquery.mast`; do not scrape MAST webpages.
 2. Verify the current MAST field names and JWST product conventions from current documentation/API
    behavior rather than assuming them.
-3. Normalize archive-specific records into the package's `Observation` and `Product` models.
+3. Normalize exposure-level archive records into `Exposure` and `Product` models, then aggregate
+   exposures into observing-mode-aware `ScienceDataset` objects.
 4. For the first validated use case, correctly recognize NIRISS/SOSS time-series data and plan
    `Detector1Pipeline -> Spec2Pipeline -> Tso3Pipeline` when supported by the current JWST pipeline.
 5. Do not download or run the calibration pipeline during this first task.

@@ -1,8 +1,8 @@
-from jwst_redux.models import Observation
+from jwst_redux.models import Exposure
 
 
-def test_observation_is_hashable_frozen_dataclass() -> None:
-    observation = Observation(
+def test_exposure_preserves_archive_metadata() -> None:
+    exposure = Exposure(
         program_id=None,
         observation_id=None,
         visit_id=None,
@@ -10,4 +10,4 @@ def test_observation_is_hashable_frozen_dataclass() -> None:
         instrument="NIRISS",
         exposure_type="NIS_SOSS",
     )
-    assert observation.target_name == "TOI-3884"
+    assert exposure.target_name == "TOI-3884"
