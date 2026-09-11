@@ -34,6 +34,29 @@ class DiscoveryConfig:
     output_root: Path
 
 
+@dataclass(frozen=True)
+class Stage1SelectionConfig:
+    """Exact scientific dataset, exposure, and product selected for Stage 1."""
+
+    program_id: str
+    observation_id: str
+    visit_number: str
+    exposure_id: str
+    segment_number: int
+    filename: str
+
+
+@dataclass(frozen=True)
+class WriteConfig:
+    """Validated configuration for the single-product Stage 1 milestone."""
+
+    discovery: DiscoveryConfig
+    selection: Stage1SelectionConfig
+    crds_context: str
+    parameter_overrides: dict[str, Any]
+    overwrite: bool
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     """Load a YAML configuration file."""
     config_path = Path(path)
@@ -82,6 +105,44 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
     )
 
 
+def load_write_config(path: str | Path) -> WriteConfig:
+    """Load the exact single-product selection and Stage 1 execution settings."""
+    discovery = load_discovery_config(path)
+    data = load_config(path)
+    stage1 = _mapping(data, "stage1")
+    selection = _mapping(stage1, "selection")
+    pipeline = _mapping(data, "pipeline")
+    options = _mapping(data, "options")
+
+    segment_number = selection.get("segment_number")
+    if not isinstance(segment_number, int) or isinstance(segment_number, bool):
+        raise ConfigurationError("Configuration field 'stage1.selection.segment_number' must be an integer.")
+    if segment_number < 1:
+        raise ConfigurationError("Configuration field 'stage1.selection.segment_number' must be positive.")
+
+    overrides = pipeline.get("overrides", {})
+    if not isinstance(overrides, dict):
+        raise ConfigurationError("Configuration field 'pipeline.overrides' must be a mapping.")
+    overwrite = options.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise ConfigurationError("Configuration field 'options.overwrite' must be boolean.")
+
+    return WriteConfig(
+        discovery=discovery,
+        selection=Stage1SelectionConfig(
+            program_id=_required_identifier(selection, "program_id", width=5),
+            observation_id=_required_identifier(selection, "observation_id", width=3),
+            visit_number=_required_identifier(selection, "visit_number", width=3),
+            exposure_id=_required_string(selection, "exposure_id"),
+            segment_number=segment_number,
+            filename=_required_string(selection, "filename"),
+        ),
+        crds_context=str(pipeline.get("crds_context", "auto")).strip().lower(),
+        parameter_overrides=dict(overrides),
+        overwrite=overwrite,
+    )
+
+
 def _mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key)
     if not isinstance(value, dict):
@@ -103,6 +164,14 @@ def _optional_identifier(value: Any) -> str | None:
     if not text:
         raise ConfigurationError("Optional archive identifiers cannot be empty strings.")
     return text
+
+
+def _required_identifier(data: dict[str, Any], key: str, *, width: int) -> str:
+    value = data.get(key)
+    identifier = _optional_identifier(value)
+    if identifier is None:
+        raise ConfigurationError(f"Configuration field '{key}' is required.")
+    return identifier.zfill(width)
 
 
 def _archive_target_names(query: dict[str, Any]) -> tuple[str, ...]:

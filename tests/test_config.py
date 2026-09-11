@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from jwst_redux.config import load_config, load_discovery_config
+from jwst_redux.config import load_config, load_discovery_config, load_write_config
 from jwst_redux.exceptions import ConfigurationError
 
 
@@ -22,6 +22,19 @@ def test_validate_toi3884_discovery_config() -> None:
     assert config.query.archive_target_names == ("TOI-3884", "TOI-3884b")
     assert config.query.proposal_ids is None
     assert config.start_from == "uncal"
+
+
+def test_validate_toi3884_stage1_selection() -> None:
+    path = Path(__file__).parents[1] / "configs" / "toi3884.yaml"
+    config = load_write_config(path)
+    assert config.selection.program_id == "05799"
+    assert config.selection.observation_id == "001"
+    assert config.selection.visit_number == "001"
+    assert config.selection.exposure_id == "jw05799001001_04101_00001"
+    assert config.selection.segment_number == 1
+    assert config.selection.filename.endswith("-seg001_nis_uncal.fits")
+    assert config.crds_context == "auto"
+    assert config.parameter_overrides == {}
 
 
 def test_reject_unimplemented_target_matching_strategy(tmp_path: Path) -> None:

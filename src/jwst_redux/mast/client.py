@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from astroquery.mast import MastMissions
@@ -15,6 +16,11 @@ class MissionsBackend(Protocol):
 
     def get_product_list(self, datasets: list[str]) -> Any:
         """Return product rows for exposure-level MAST dataset identifiers."""
+
+    def download_file(
+        self, uri: str, *, local_path: Path, cache: bool, verbose: bool
+    ) -> tuple[str, str | None, str | None]:
+        """Download one archive product to an explicit local path."""
 
 
 class MastClient:
@@ -37,6 +43,15 @@ class MastClient:
         """List products for exposure-level MAST IDs without retrieving files."""
         table = self._backend.get_product_list(exposure_ids)
         return _table_records(table)
+
+    def download_product(self, uri: str, destination: Path) -> tuple[str, str | None, str | None]:
+        """Download one product with Astroquery's supported MAST machinery."""
+        return self._backend.download_file(
+            uri,
+            local_path=destination,
+            cache=False,
+            verbose=True,
+        )
 
 
 def _table_records(table: Any) -> list[dict[str, Any]]:

@@ -8,12 +8,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import DiscoveryConfig, load_config, load_discovery_config
+from .config import DiscoveryConfig, load_config, load_discovery_config, load_write_config
 from .exceptions import JWSTReduxError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
-from .workspace import Workspace
+from .stage1 import download_selected, run_selected_stage1
 
 app = typer.Typer(no_args_is_help=True, help="Retrieve and reduce JWST datasets reproducibly.")
 console = Console()
@@ -50,20 +50,50 @@ def plan(config: Path) -> None:
 
 
 @app.command()
-def download(config: Path) -> None:
-    """Download required archive products."""
-    _config(config)
-    console.print("[yellow]Not implemented yet:[/] MAST product download")
+def download(
+    config: Path,
+    overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing raw file."),
+) -> None:
+    """Download the single Stage 1 product selected in CONFIG."""
+    try:
+        result = download_selected(load_write_config(config), overwrite=overwrite)
+    except (JWSTReduxError, OSError, TypeError) as error:
+        _abort(error)
+    action = "Reused" if result.download.reused else "Downloaded"
+    console.print(
+        f"[green]{action}[/] {result.download.path} "
+        f"({_format_bytes(result.download.size_bytes)})"
+    )
 
 
 @app.command()
-def run(config: Path) -> None:
-    """Run the planned JWST calibration stages."""
-    cfg = _config(config)
-    root = Path(cfg["output"]["root"])
-    Workspace(root).create()
-    console.print(f"Workspace ready at {root}")
-    console.print("[yellow]Not implemented yet:[/] JWST pipeline execution")
+def run(
+    config: Path,
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Redownload the raw input and rerun Detector1Pipeline.",
+    ),
+) -> None:
+    """Download and run Detector1 for the single Stage 1 selection in CONFIG."""
+    try:
+        result = run_selected_stage1(load_write_config(config), overwrite=overwrite)
+    except (JWSTReduxError, OSError, TypeError) as error:
+        _abort(error)
+    download_action = "reused" if result.download.reused else "downloaded"
+    console.print(
+        f"Raw input {download_action}: {result.download.path} "
+        f"({_format_bytes(result.download.size_bytes)})"
+    )
+    if result.status == "skipped":
+        console.print("[green]Detector1Pipeline skipped:[/] matching successful manifest run found.")
+    else:
+        console.print(f"[green]Detector1Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
+    for output in result.outputs:
+        console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
+    console.print(f"CRDS context: {result.crds_context}")
+    console.print(f"Pipeline log: {result.log_path}")
+    console.print(f"Manifest: {result.log_path.parent.parent / 'manifest.json'}")
 
 
 @app.command()

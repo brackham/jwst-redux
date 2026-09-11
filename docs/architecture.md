@@ -34,13 +34,16 @@ metadata. When association creation is implemented, use an appropriate official 
 or the official `jwst.associations` machinery rather than defining a custom association format.
 
 ### `pipeline/`
-Runs the selected `jwst` Pipeline classes with standard defaults plus explicit user overrides.
+Runs the selected `jwst` Pipeline classes with standard defaults plus explicit user overrides. The
+implemented write path stops after `Detector1Pipeline` for one explicitly selected product.
 
 ### `workspace.py`
-Defines where raw, Stage 1, Stage 2, Stage 3, logs, and manifests live.
+Defines where raw, Stage 1, Stage 2, Stage 3, logs, and manifests live. It is created only by write
+commands; search and plan never instantiate it. CRDS cache files remain external infrastructure.
 
 ### `provenance.py`
-Records enough metadata to reproduce, audit, resume, or deliberately rerun a reduction.
+Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
+manifest. Resume requires a matching successful entry and intact size-checked outputs.
 
 ## Non-goals for the first release
 

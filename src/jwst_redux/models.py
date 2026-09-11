@@ -57,6 +57,15 @@ class ScienceDataset:
 
 
 @dataclass(frozen=True)
+class SelectedProduct:
+    """One product selected through its scientific dataset and exposure parents."""
+
+    dataset: ScienceDataset
+    exposure: Exposure
+    product: Product
+
+
+@dataclass(frozen=True)
 class ReductionGroup:
     """Exposures sharing one compatible reduction/association path."""
 

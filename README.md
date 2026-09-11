@@ -13,7 +13,7 @@ fast, repeatable, resumable, and easy to apply to another JWST dataset.
 
 The first end-to-end example will be all archival NIRISS/SOSS observations of TOI-3884.
 
-The implemented first milestone is read-only with respect to MAST:
+Discovery and planning remain read-only:
 
 ```bash
 jwst-redux search configs/toi3884.yaml
@@ -30,17 +30,29 @@ For the TOI-3884 example, `query.archive_target_names` records the target names 
 (`TOI-3884` and `TOI-3884b`) while `query.target` retains the scientific target identity. The optional
 `query.proposal_ids` field may be `null` for all proposals, one proposal ID, or a YAML list of IDs.
 
-## Intended CLI
+The current write milestone is deliberately restricted by `stage1.selection` in the YAML to
+`jw05799001001_04101_00001-seg001_nis_uncal.fits`:
 
 ```bash
 jwst-redux download configs/toi3884.yaml
 jwst-redux run configs/toi3884.yaml
+jwst-redux run configs/toi3884.yaml --overwrite
+```
+
+`download` stores only that selected product under `work/toi3884/raw/`. `run` reuses or downloads it,
+then runs the official `jwst.pipeline.Detector1Pipeline` with normal defaults and writes `_rate` and
+`_rateints` products under `stage1/`. A matching successful manifest entry plus intact outputs causes
+a repeated run to skip Detector1; `--overwrite` forces both download and processing. The CRDS cache
+remains external to this workspace.
+
+The remaining workflow commands are scaffolded:
+
+```bash
 jwst-redux status configs/toi3884.yaml
 jwst-redux all configs/toi3884.yaml
 ```
 
-The remaining commands are currently scaffolded. See `docs/codex-first-task.md` for the implemented
-discovery and planning milestone.
+See `docs/codex-first-task.md` for the discovery and planning milestone.
 
 ## Development setup
 

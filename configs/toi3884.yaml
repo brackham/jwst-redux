@@ -17,9 +17,19 @@ query:
 products:
   start_from: uncal
 
+stage1:
+  selection:
+    program_id: 5799
+    observation_id: 1
+    visit_number: 1
+    exposure_id: jw05799001001_04101_00001
+    segment_number: 1
+    filename: jw05799001001_04101_00001-seg001_nis_uncal.fits
+
 pipeline:
   stages: auto
-  crds_context: latest
+  # auto uses the context selected for the installed jwst pipeline by CRDS.
+  crds_context: auto
   overrides: {}
 
 output:
@@ -30,5 +40,4 @@ options:
   overwrite: false
   dry_run: false
 
-# The first future Stage 1 smoke test is intentionally narrower than discovery:
-# jw05799001001_04101_00001-seg001_nis_uncal.fits only.
+# The Stage 1 smoke test above is intentionally narrower than discovery.
