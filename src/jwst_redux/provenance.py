@@ -86,6 +86,37 @@ class ManifestStore:
                 return entry
         return None
 
+    def successful_entry(
+        self,
+        operation: str,
+        required_fields: dict[str, Any],
+        software_requirements: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return the newest intact success matching explicit provenance fields."""
+        data = self._load()
+        for entry in reversed(data["runs"]):
+            if entry.get("operation") != operation or entry.get("status") != "success":
+                continue
+            if any(entry.get(key) != value for key, value in required_fields.items()):
+                continue
+            recorded_software = entry.get("software", {})
+            if any(
+                recorded_software.get(key) != value
+                for key, value in software_requirements.items()
+            ):
+                continue
+            outputs = entry.get("outputs", [])
+            if outputs and all(_recorded_file_is_intact(output) for output in outputs):
+                return entry
+        return None
+
+    def entry(self, run_id: str) -> dict[str, Any] | None:
+        """Return a manifest entry by run identifier."""
+        for entry in self._load()["runs"]:
+            if entry.get("run_id") == run_id:
+                return entry
+        return None
+
     def entries(self) -> list[dict[str, Any]]:
         return list(self._load()["runs"])
 

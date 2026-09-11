@@ -35,7 +35,11 @@ or the official `jwst.associations` machinery rather than defining a custom asso
 
 ### `pipeline/`
 Runs the selected `jwst` Pipeline classes with standard defaults plus explicit user overrides. The
-implemented write path stops after `Detector1Pipeline` for one explicitly selected product.
+implemented write path can run through `Spec2Pipeline` for one explicitly selected product. Stage 2
+input is resolved from the intact output record of a successful Stage 1 manifest entry, preserving
+the provenance link rather than reconstructing a filename. For this TSO/SOSS mode, `_calints` is the
+future TSO3 association input while `_x1dints` is a per-exposure extracted product. TSO3 execution and
+association creation remain unimplemented.
 
 ### `workspace.py`
 Defines where raw, Stage 1, Stage 2, Stage 3, logs, and manifests live. It is created only by write
@@ -43,7 +47,9 @@ commands; search and plan never instantiate it. CRDS cache files remain external
 
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
-manifest. Resume requires a matching successful entry and intact size-checked outputs.
+manifest. Pipeline entries also capture the resolved parameter configuration and warning/error
+summary from the complete log. Resume requires a matching successful entry and intact size-checked
+outputs; downstream stages explicitly reference the successful upstream run.
 
 ## Non-goals for the first release
 

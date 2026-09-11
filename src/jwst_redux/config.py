@@ -48,12 +48,13 @@ class Stage1SelectionConfig:
 
 @dataclass(frozen=True)
 class WriteConfig:
-    """Validated configuration for the single-product Stage 1 milestone."""
+    """Validated configuration for the single-product pipeline milestones."""
 
     discovery: DiscoveryConfig
     selection: Stage1SelectionConfig
     crds_context: str
     parameter_overrides: dict[str, Any]
+    spec2_parameter_overrides: dict[str, Any]
     overwrite: bool
 
 
@@ -123,6 +124,11 @@ def load_write_config(path: str | Path) -> WriteConfig:
     overrides = pipeline.get("overrides", {})
     if not isinstance(overrides, dict):
         raise ConfigurationError("Configuration field 'pipeline.overrides' must be a mapping.")
+    spec2_overrides = pipeline.get("spec2_overrides", {})
+    if not isinstance(spec2_overrides, dict):
+        raise ConfigurationError(
+            "Configuration field 'pipeline.spec2_overrides' must be a mapping."
+        )
     overwrite = options.get("overwrite", False)
     if not isinstance(overwrite, bool):
         raise ConfigurationError("Configuration field 'options.overwrite' must be boolean.")
@@ -139,6 +145,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         ),
         crds_context=str(pipeline.get("crds_context", "auto")).strip().lower(),
         parameter_overrides=dict(overrides),
+        spec2_parameter_overrides=dict(spec2_overrides),
         overwrite=overwrite,
     )
 

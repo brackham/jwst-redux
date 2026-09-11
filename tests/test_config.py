@@ -35,6 +35,7 @@ def test_validate_toi3884_stage1_selection() -> None:
     assert config.selection.filename.endswith("-seg001_nis_uncal.fits")
     assert config.crds_context == "auto"
     assert config.parameter_overrides == {}
+    assert config.spec2_parameter_overrides == {}
 
 
 def test_reject_unimplemented_target_matching_strategy(tmp_path: Path) -> None:

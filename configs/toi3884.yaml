@@ -31,6 +31,7 @@ pipeline:
   # auto uses the context selected for the installed jwst pipeline by CRDS.
   crds_context: auto
   overrides: {}
+  spec2_overrides: {}
 
 output:
   root: ./work/toi3884

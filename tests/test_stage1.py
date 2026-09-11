@@ -86,6 +86,7 @@ def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResul
         ),
         crds_context="auto",
         parameter_overrides={},
+        spec2_parameter_overrides={},
         overwrite=False,
     )
     return config, result

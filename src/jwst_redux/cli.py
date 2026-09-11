@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -13,10 +15,20 @@ from .exceptions import JWSTReduxError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
-from .stage1 import download_selected, run_selected_stage1
+from .stage1 import (
+    Stage1WorkflowResult,
+    Stage2WorkflowResult,
+    download_selected,
+    run_selected_through,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Retrieve and reduce JWST datasets reproducibly.")
 console = Console()
+
+
+class ThroughStage(str, Enum):
+    stage1 = "stage1"
+    stage2 = "stage2"
 
 
 def _config(path: Path) -> dict:
@@ -69,17 +81,32 @@ def download(
 @app.command()
 def run(
     config: Path,
+    through: Annotated[
+        ThroughStage,
+        typer.Option("--through", help="Run through this pipeline stage."),
+    ] = ThroughStage.stage1,
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
-        help="Redownload the raw input and rerun Detector1Pipeline.",
+        help="Redownload the raw input and rerun all requested stages.",
     ),
 ) -> None:
-    """Download and run Detector1 for the single Stage 1 selection in CONFIG."""
+    """Run the single selected product through Stage 1 or Stage 2."""
     try:
-        result = run_selected_stage1(load_write_config(config), overwrite=overwrite)
+        result = run_selected_through(
+            load_write_config(config),
+            through=through.value,
+            overwrite=overwrite,
+        )
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
+    _print_stage1_result(result.stage1)
+    if result.stage2 is not None:
+        _print_stage2_result(result.stage2)
+    console.print(f"Manifest: {result.stage1.log_path.parent.parent / 'manifest.json'}")
+
+
+def _print_stage1_result(result: Stage1WorkflowResult) -> None:
     download_action = "reused" if result.download.reused else "downloaded"
     console.print(
         f"Raw input {download_action}: {result.download.path} "
@@ -93,7 +120,23 @@ def run(
         console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
     console.print(f"CRDS context: {result.crds_context}")
     console.print(f"Pipeline log: {result.log_path}")
-    console.print(f"Manifest: {result.log_path.parent.parent / 'manifest.json'}")
+
+
+def _print_stage2_result(result: Stage2WorkflowResult) -> None:
+    console.print(f"Stage 2 input from manifest: {result.input_path}")
+    if result.status == "skipped":
+        console.print("[green]Spec2Pipeline skipped:[/] matching successful manifest run found.")
+    else:
+        console.print(f"[green]Spec2Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
+    for output in result.outputs:
+        role = (
+            "future TSO3 association input"
+            if output.name.endswith("_calints.fits")
+            else "per-exposure extracted spectrum; not a TSO3 association input"
+        )
+        console.print(f"  {output} ({_format_bytes(output.stat().st_size)}); {role}")
+    console.print(f"CRDS context: {result.crds_context}")
+    console.print(f"Pipeline log: {result.log_path}")
 
 
 @app.command()
