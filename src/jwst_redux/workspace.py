@@ -31,6 +31,12 @@ class Workspace:
         """Official JWST association files generated for local pipeline runs."""
         return self.stage3 / "associations"
 
+    def qa(self, stage: str) -> Path:
+        """Return the derived QA directory for one calibrated pipeline stage."""
+        if stage not in {"stage1", "stage2", "stage3"}:
+            raise ValueError(f"Unsupported QA stage: {stage}")
+        return getattr(self, stage) / "qa"
+
     @property
     def logs(self) -> Path:
         return self.root / "logs"
@@ -47,6 +53,9 @@ class Workspace:
             self.stage2,
             self.stage3,
             self.associations,
+            self.qa("stage1"),
+            self.qa("stage2"),
+            self.qa("stage3"),
             self.logs,
         ):
             path.mkdir(parents=True, exist_ok=True)

@@ -19,6 +19,7 @@ dependencies = [
   "PyYAML",
   "typer>=0.12",
   "rich",
+  "matplotlib",
 ]
 
 [project.optional-dependencies]

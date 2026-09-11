@@ -55,6 +55,7 @@ class WriteConfig:
     spec2_parameter_overrides: dict[str, Any]
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
+    qa_enabled: bool = False
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -113,6 +114,12 @@ def load_write_config(path: str | Path) -> WriteConfig:
     selection = _mapping(stage1, "selection")
     pipeline = _mapping(data, "pipeline")
     options = _mapping(data, "options")
+    qa = data.get("qa", {})
+    if not isinstance(qa, dict):
+        raise ConfigurationError("Configuration field 'qa' must be a mapping.")
+    qa_enabled = qa.get("enabled", True)
+    if not isinstance(qa_enabled, bool):
+        raise ConfigurationError("Configuration field 'qa.enabled' must be boolean.")
 
     overrides = pipeline.get("overrides", {})
     if not isinstance(overrides, dict):
@@ -144,6 +151,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         spec2_parameter_overrides=dict(spec2_overrides),
         tso3_parameter_overrides=dict(tso3_overrides),
         overwrite=overwrite,
+        qa_enabled=qa_enabled,
     )
 
 

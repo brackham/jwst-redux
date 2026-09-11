@@ -15,6 +15,7 @@ from .exceptions import JWSTReduxError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
+from .qa.workflow import generate_qa
 from .stage1 import (
     SegmentWorkflowResult,
     Stage1WorkflowResult,
@@ -29,6 +30,12 @@ console = Console()
 
 
 class ThroughStage(str, Enum):
+    stage1 = "stage1"
+    stage2 = "stage2"
+    stage3 = "stage3"
+
+
+class QAStage(str, Enum):
     stage1 = "stage1"
     stage2 = "stage2"
     stage3 = "stage3"
@@ -114,6 +121,31 @@ def run(
             "run with --through stage3 to create the association and execute Tso3Pipeline."
         )
     console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
+
+
+@app.command()
+def qa(
+    config: Path,
+    stage: Annotated[
+        list[QAStage] | None,
+        typer.Option("--stage", help="Stage(s) to regenerate; defaults to all successful stages."),
+    ] = None,
+    force: bool = typer.Option(False, "--force", help="Regenerate even current QA products."),
+) -> None:
+    """Regenerate QA from successful local pipeline products only."""
+    try:
+        results = generate_qa(
+            load_write_config(config),
+            stages=tuple(item.value for item in stage or ()) or ("stage1", "stage2", "stage3"),
+            force=force,
+        )
+    except (JWSTReduxError, OSError, TypeError) as error:
+        _abort(error)
+    for result in results:
+        color = "green" if result.status in {"success", "skipped"} else "red"
+        console.print(f"[{color}]QA {result.stage} {result.status}[/]: {result.input_paths[0]}")
+        for output in result.outputs:
+            console.print(f"  {output}")
 
 
 def _print_segment_result(result: SegmentWorkflowResult) -> None:

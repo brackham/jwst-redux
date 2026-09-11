@@ -40,4 +40,8 @@ options:
   overwrite: false
   dry_run: false
 
+qa:
+  # Derived inspection products; failures do not invalidate calibration outputs.
+  enabled: true
+
 # This explicit selector processes every validated segment of the exposure in order.

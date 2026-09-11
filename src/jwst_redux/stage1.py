@@ -339,6 +339,8 @@ def run_selected_through(
             context_resolver=context_resolver,
             _selected=selected,
         )
+        if config.qa_enabled:
+            _generate_qa_without_affecting_pipeline(config, ("stage1",))
         stage2 = (
             _run_selected_stage2(
                 config,
@@ -349,6 +351,8 @@ def run_selected_through(
             if through in {"stage2", "stage3"}
             else None
         )
+        if stage2 is not None and config.qa_enabled:
+            _generate_qa_without_affecting_pipeline(config, ("stage2",))
         segment_results.append(SegmentWorkflowResult(stage1=stage1, stage2=stage2))
     readiness = (
         stage3_readiness(config, selected_exposure=selected_exposure)
@@ -366,9 +370,22 @@ def run_selected_through(
         if through == "stage3" and readiness is not None
         else None
     )
+    if stage3 is not None and config.qa_enabled:
+        _generate_qa_without_affecting_pipeline(config, ("stage3",))
     return ThroughWorkflowResult(
         segments=tuple(segment_results), stage3_readiness=readiness, stage3=stage3
     )
+
+
+def _generate_qa_without_affecting_pipeline(config: WriteConfig, stages: tuple[str, ...]) -> None:
+    """Generate derived QA without allowing plot failures to affect calibration."""
+    from .qa.workflow import generate_qa
+
+    try:
+        generate_qa(config, stages=stages)
+    except Exception:  # noqa: BLE001 - QA must never invalidate calibration success.
+        # QA failures are recorded by the QA layer; pipeline success remains valid.
+        return
 
 
 def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:

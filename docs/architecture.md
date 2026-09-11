@@ -50,6 +50,17 @@ Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and ma
 created only by write commands; search and plan never instantiate it. CRDS cache files remain external
 infrastructure.
 
+### `qa/`
+
+Creates derived PNG diagnostics under `stage1/qa/`, `stage2/qa/`, and `stage3/qa/`, in product-specific directories.
+This layer reads successful official products but is not itself a JWST pipeline step. Its schema version, inputs,
+normalization choices, outputs, upstream run IDs, and status are independent manifest entries. QA can be rebuilt
+without changing pipeline provenance or causing calibration to rerun.
+
+The shared `qa.common.DynamicSpectrumConfig` holds the display-only SOSS dynamic-spectrum guardrails: finite
+coverage, relative flux floor, robust scaling percentile, 1–50 ppt color-range bounds, and rejection of channels
+with pathological temporal residuals. These values are captured in QA provenance and do not alter FITS products.
+
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
 manifest. Pipeline entries also capture the resolved parameter configuration and warning/error

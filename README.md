@@ -39,6 +39,8 @@ jwst-redux run configs/toi3884.yaml
 jwst-redux run configs/toi3884.yaml --through stage2
 jwst-redux run configs/toi3884.yaml --through stage3
 jwst-redux run configs/toi3884.yaml --overwrite
+jwst-redux qa configs/toi3884.yaml
+jwst-redux qa configs/toi3884.yaml --stage stage3 --force
 ```
 
 `run` reuses or downloads each segment, then runs the official `jwst.pipeline.Detector1Pipeline`
@@ -51,6 +53,11 @@ resolves every selected segment's `_calints` directly from successful Stage-2 ma
 writes an official JWST Level-3 association under `stage3/associations/`, and calls
 `jwst.pipeline.Tso3Pipeline`. Association creation and TSO3 execution are resumable from their
 member/run identity and intact recorded outputs. The CRDS cache remains external to this workspace.
+
+Successful stages automatically create derived inspection QA (unless `qa.enabled: false`). QA is independent from
+official calibration: plotting failure is recorded separately and never invalidates or reruns Detector1, Spec2, or
+TSO3 products. The `qa` command rebuilds missing or stale figures from existing successful manifest products only;
+it does not query MAST, download data, access CRDS, or execute calibration.
 
 The remaining workflow commands are scaffolded:
 
