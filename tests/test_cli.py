@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from jwst_redux import cli
 from jwst_redux.datasets import attach_products, build_science_datasets
+from jwst_redux.exceptions import PipelineExecutionError
 from jwst_redux.mast.products import normalize_products, select_starting_products
 from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 
@@ -66,3 +67,17 @@ def test_search_and_plan_are_read_only(
 
 def test_format_bytes_keeps_small_products_visible() -> None:
     assert cli._format_bytes(1_100_160) == "1.10 MB (1.05 MiB)"
+
+
+def test_run_reports_pipeline_error_to_stderr_without_masking_it(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "load_write_config", lambda _: object())
+
+    def fail_pipeline(*_args, **_kwargs):
+        raise PipelineExecutionError("original TSO3 pipeline error")
+
+    monkeypatch.setattr(cli, "run_selected_through", fail_pipeline)
+    result = CliRunner().invoke(cli.app, ["run", "ignored.yaml", "--through", "stage3"])
+
+    assert result.exit_code == 1
+    assert "original TSO3 pipeline error" in result.stderr
+    assert "Console.print" not in result.output

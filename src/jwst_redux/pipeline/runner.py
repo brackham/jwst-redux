@@ -153,6 +153,56 @@ def run_spec2(
     return PipelineResult(outputs=outputs, elapsed_seconds=elapsed, log_path=log_path)
 
 
+def run_tso3(
+    association_path: Path,
+    output_dir: Path,
+    log_path: Path,
+    crds_context: str,
+    parameter_overrides: dict[str, Any],
+    *,
+    pipeline: PipelineCallable | None = None,
+) -> PipelineResult:
+    """Run TSO3 from an official Level-3 association and retain its actual outputs.
+
+    TSO3's outputs vary with the official pipeline configuration.  Record every
+    non-empty file written or changed by this invocation instead of assuming a
+    fixed product set.
+    """
+    if not association_path.is_file():
+        raise PipelineExecutionError(f"TSO3 association is missing: {association_path}")
+    before = _output_state(output_dir)
+    started = time.monotonic()
+    with (
+        log_path.open("a", encoding="utf-8", buffering=1) as log_file,
+        _tee_console(log_file),
+        _temporary_crds_context(crds_context),
+    ):
+        print(f"jwst-redux: Tso3Pipeline association={association_path}")
+        print(f"jwst-redux: CRDS context={crds_context}")
+        try:
+            if pipeline is None:
+                _call_official_tso3(association_path, output_dir, parameter_overrides)
+            else:
+                pipeline(association_path, output_dir, parameter_overrides)
+        except Exception:
+            traceback.print_exc()
+            raise
+    elapsed = time.monotonic() - started
+
+    outputs = tuple(
+        path
+        for path, state in sorted(_output_state(output_dir).items())
+        if path != association_path
+        and state[0] > 0
+        and before.get(path) != state
+    )
+    if not outputs:
+        raise PipelineExecutionError(
+            "Tso3Pipeline did not create or update any non-empty Stage 3 outputs."
+        )
+    return PipelineResult(outputs=outputs, elapsed_seconds=elapsed, log_path=log_path)
+
+
 def _call_official_detector1(
     input_path: Path, output_dir: Path, parameter_overrides: dict[str, Any]
 ) -> None:
@@ -182,6 +232,33 @@ def _call_official_spec2(
     for result in results if isinstance(results, list | tuple) else (results,):
         if hasattr(result, "close"):
             result.close()
+
+
+def _call_official_tso3(
+    association_path: Path,
+    output_dir: Path,
+    parameter_overrides: dict[str, Any],
+) -> None:
+    from jwst.pipeline import Tso3Pipeline
+
+    result = Tso3Pipeline.call(
+        str(association_path),
+        output_dir=str(output_dir),
+        save_results=True,
+        **parameter_overrides,
+    )
+    if hasattr(result, "close"):
+        result.close()
+
+
+def _output_state(output_dir: Path) -> dict[Path, tuple[int, int]]:
+    """Return size/mtime identities for direct, regular Stage 3 output files."""
+    return {
+        path: (stat.st_size, stat.st_mtime_ns)
+        for path in output_dir.iterdir()
+        if path.is_file() and not path.is_symlink()
+        if (stat := path.stat()).st_size > 0
+    }
 
 
 def pipeline_log_summary(log_path: Path, pipeline_name: str) -> dict[str, Any]:

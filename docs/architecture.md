@@ -39,13 +39,16 @@ implemented write path selects one explicit scientific dataset/exposure, validat
 starting-product segment set, and runs its products sequentially through `Detector1Pipeline` and
 `Spec2Pipeline`. Resume is per segment. Stage 2 input is resolved from the intact output record of a
 successful Stage 1 manifest entry, preserving the provenance link rather than reconstructing a
-filename. For this TSO/SOSS mode, `_calints` is the future TSO3 association input while `_x1dints` is
-a per-exposure extracted product. A read-only readiness check requires one intact `_calints` manifest
-record per expected segment; TSO3 execution and association creation remain unimplemented.
+filename. For this TSO/SOSS mode, `_calints` is the TSO3 association input while `_x1dints` is a
+per-exposure extracted product. Stage 3 resolves one intact `_calints` record per expected selected
+segment, constructs a schema-validated official Level-3 association with `jwst.associations`, and
+runs `Tso3Pipeline` once. Its resume key includes association content, all member paths, and upstream
+Stage-2 run IDs; actual TSO3 outputs are captured rather than assumed.
 
 ### `workspace.py`
-Defines where raw, Stage 1, Stage 2, Stage 3, logs, and manifests live. It is created only by write
-commands; search and plan never instantiate it. CRDS cache files remain external infrastructure.
+Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and manifests live. It is
+created only by write commands; search and plan never instantiate it. CRDS cache files remain external
+infrastructure.
 
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON

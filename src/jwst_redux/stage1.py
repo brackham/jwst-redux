@@ -23,9 +23,11 @@ from .pipeline.runner import (
     resolve_crds_context,
     run_detector1,
     run_spec2,
+    run_tso3,
 )
 from .provenance import ManifestStore, make_run_key, software_versions, utc_now
 from .selection import select_exposure, select_stage1_product
+from .stage3_association import Stage3Association, create_tso3_association
 from .workspace import Workspace
 
 Discoverer = Callable[[Any], DiscoveryResult]
@@ -67,6 +69,7 @@ class Stage2WorkflowResult:
 class ThroughWorkflowResult:
     segments: tuple[SegmentWorkflowResult, ...]
     stage3_readiness: Stage3Readiness | None = None
+    stage3: Stage3WorkflowResult | None = None
 
 
 @dataclass(frozen=True)
@@ -79,11 +82,25 @@ class SegmentWorkflowResult:
 
 @dataclass(frozen=True)
 class Stage3Readiness:
-    """Intact Stage 2 products available for a future official TSO3 association."""
+    """Intact Stage 2 products available for an official TSO3 association."""
 
     selected: SelectedExposure
     calints_inputs: tuple[Path, ...]
     upstream_stage2_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Stage3WorkflowResult:
+    """One TSO3 invocation (or resume) for the explicitly selected exposure."""
+
+    readiness: Stage3Readiness
+    association: Stage3Association
+    status: str
+    outputs: tuple[Path, ...]
+    elapsed_seconds: float
+    crds_context: str
+    log_path: Path
+    manifest_entry: dict[str, Any]
 
 
 def download_selected(
@@ -299,10 +316,11 @@ def run_selected_through(
     downloader: ProductDownloader | None = None,
     detector1_pipeline: PipelineCallable | None = None,
     spec2_pipeline: PipelineCallable | None = None,
+    tso3_pipeline: PipelineCallable | None = None,
     context_resolver: ContextResolver | None = None,
 ) -> ThroughWorkflowResult:
     """Run every validated segment of the selected exposure in segment order."""
-    if through not in {"stage1", "stage2"}:
+    if through not in {"stage1", "stage2", "stage3"}:
         raise PipelineExecutionError(f"Unsupported --through stage: {through}")
     selected_exposure = _discover_selected_exposure(config, discoverer)
     segment_results: list[SegmentWorkflowResult] = []
@@ -328,16 +346,29 @@ def run_selected_through(
                 overwrite=overwrite,
                 pipeline=spec2_pipeline,
             )
-            if through == "stage2"
+            if through in {"stage2", "stage3"}
             else None
         )
         segment_results.append(SegmentWorkflowResult(stage1=stage1, stage2=stage2))
     readiness = (
         stage3_readiness(config, selected_exposure=selected_exposure)
-        if through == "stage2"
+        if through in {"stage2", "stage3"}
         else None
     )
-    return ThroughWorkflowResult(segments=tuple(segment_results), stage3_readiness=readiness)
+    stage3 = (
+        _run_selected_stage3(
+            config,
+            readiness,
+            overwrite=overwrite,
+            pipeline=tso3_pipeline,
+            context_resolver=context_resolver,
+        )
+        if through == "stage3" and readiness is not None
+        else None
+    )
+    return ThroughWorkflowResult(
+        segments=tuple(segment_results), stage3_readiness=readiness, stage3=stage3
+    )
 
 
 def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:
@@ -379,11 +410,7 @@ def stage3_readiness(
     discoverer: Discoverer | None = None,
     selected_exposure: SelectedExposure | None = None,
 ) -> Stage3Readiness:
-    """Return all intact `_calints` products required by a future TSO3 association.
-
-    This is intentionally a manifest validation only: association construction and
-    ``Tso3Pipeline`` execution remain separate future milestones.
-    """
+    """Resolve all intact Stage-2 `_calints` products for selected TSO3 execution."""
     selected = selected_exposure or _discover_selected_exposure(config, discoverer)
     workspace = Workspace(config.discovery.output_root.resolve())
     if not workspace.manifest.is_file():
@@ -419,6 +446,153 @@ def stage3_readiness(
         calints_inputs=tuple(calints_inputs),
         upstream_stage2_run_ids=tuple(run_ids),
     )
+
+
+def _run_selected_stage3(
+    config: WriteConfig,
+    readiness: Stage3Readiness,
+    *,
+    overwrite: bool,
+    pipeline: PipelineCallable | None,
+    context_resolver: ContextResolver | None,
+) -> Stage3WorkflowResult:
+    """Create/reuse one association and run TSO3 for the selected exposure only."""
+    workspace = Workspace(config.discovery.output_root.resolve())
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    selected = readiness.selected
+    _validate_stage3_group(selected)
+    association = create_tso3_association(
+        readiness.calints_inputs,
+        workspace.associations,
+        _tso3_product_name(selected),
+    )
+    software = software_versions()
+    crds_context = (context_resolver or resolve_crds_context)(config.crds_context)
+    association_record = _association_record(association, readiness)
+    run_key = make_run_key(
+        {
+            **_stage3_base_entry(config, selected),
+            "software": software,
+            "crds_context": crds_context,
+            "association": association_record,
+        }
+    )
+    run_id = str(uuid.uuid4())
+    log_path = workspace.logs / f"stage3-{association.product_name}-{run_id[:8]}.log"
+    manifest.append(
+        {
+            **_stage3_base_entry(config, selected),
+            "run_id": run_id,
+            "run_key": run_key,
+            "operation": "stage3",
+            "status": "running",
+            "start_time": utc_now(),
+            "end_time": None,
+            "log_path": str(log_path),
+            "software": software,
+            "requested_crds_context": config.crds_context,
+            "crds_context": crds_context,
+            "association": association_record,
+        }
+    )
+
+    pipeline_started: float | None = None
+    try:
+        previous = None if overwrite or config.overwrite else manifest.successful_run(run_key)
+        if previous is not None:
+            output_records = previous["outputs"]
+            log_path.write_text(
+                "jwst-redux: Tso3Pipeline skipped; matching successful manifest run "
+                f"{previous['run_id']} remains complete.\n",
+                encoding="utf-8",
+            )
+            manifest.update(
+                run_id,
+                {
+                    "status": "skipped",
+                    "end_time": utc_now(),
+                    "elapsed_processing_seconds": 0.0,
+                    "outputs": output_records,
+                    "resumed_from_run_id": previous["run_id"],
+                    "pipeline_configuration": previous.get("pipeline_configuration"),
+                    "pipeline_messages": {
+                        "warning_count": 0,
+                        "error_count": 0,
+                        "warnings": [],
+                        "errors": [],
+                    },
+                },
+            )
+            return Stage3WorkflowResult(
+                readiness=readiness,
+                association=association,
+                status="skipped",
+                outputs=tuple(Path(record["path"]) for record in output_records),
+                elapsed_seconds=0.0,
+                crds_context=crds_context,
+                log_path=log_path,
+                manifest_entry=manifest.entries()[-1],
+            )
+
+        pipeline_started = time.monotonic()
+        stage3 = run_tso3(
+            association.path,
+            workspace.stage3,
+            log_path,
+            crds_context,
+            config.tso3_parameter_overrides,
+            pipeline=pipeline,
+        )
+        provenance = _pipeline_provenance(
+            log_path,
+            "Tso3Pipeline",
+            workspace.stage3,
+            config.tso3_parameter_overrides,
+        )
+        provenance["pipeline_configuration"]["invocation"].update(
+            {"association_path": str(association.path)}
+        )
+        output_records = [_stage3_file_record(path) for path in stage3.outputs]
+        manifest.update(
+            run_id,
+            {
+                "status": "success",
+                "end_time": utc_now(),
+                "elapsed_processing_seconds": stage3.elapsed_seconds,
+                "outputs": output_records,
+                **provenance,
+            },
+        )
+        return Stage3WorkflowResult(
+            readiness=readiness,
+            association=association,
+            status="success",
+            outputs=stage3.outputs,
+            elapsed_seconds=stage3.elapsed_seconds,
+            crds_context=crds_context,
+            log_path=log_path,
+            manifest_entry=manifest.entries()[-1],
+        )
+    except Exception as error:
+        elapsed = 0.0 if pipeline_started is None else time.monotonic() - pipeline_started
+        manifest.update(
+            run_id,
+            {
+                "status": "failed",
+                "end_time": utc_now(),
+                "elapsed_processing_seconds": elapsed,
+                "error": repr(error),
+                **_pipeline_provenance(
+                    log_path,
+                    "Tso3Pipeline",
+                    workspace.stage3,
+                    config.tso3_parameter_overrides,
+                ),
+            },
+        )
+        if isinstance(error, JWSTReduxError):
+            raise
+        raise PipelineExecutionError(f"Tso3Pipeline failed: {error}") from error
 
 
 def _manifest_stage2_calints(entry: dict[str, Any]) -> Path:
@@ -676,6 +850,55 @@ def _base_entry(
     }
 
 
+def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[str, Any]:
+    """Provenance shared by a single-exposure TSO3 association/run."""
+    return {
+        "scientific_target": config.discovery.query.target,
+        "scientific_dataset": dict(selected.dataset.identity),
+        "exposure_identifier": selected.exposure.exposure_id,
+        "pipeline_class": "jwst.pipeline.Tso3Pipeline",
+        "explicit_parameter_overrides": config.tso3_parameter_overrides,
+    }
+
+
+def _validate_stage3_group(selected: SelectedExposure) -> None:
+    """Confirm the selected parent exposure is eligible for one TSO3 group.
+
+    Products cannot cross an incompatible boundary here: every member is
+    selected from the same ``ScienceDataset -> Exposure`` parent chain.  The
+    official metadata path is still checked so that an exposure unsupported by
+    TSO3 (for example single-integration SOSS) cannot reach association creation.
+    """
+    from .pipeline.stages import pipeline_path_for
+
+    pipeline_path = pipeline_path_for(selected.exposure)
+    if "Tso3Pipeline" not in pipeline_path.classes:
+        raise PipelineExecutionError(
+            "Selected products are not compatible with an official TSO3 reduction group: "
+            f"{selected.exposure.exposure_id} resolves to {pipeline_path.classes!r}."
+        )
+
+
+def _tso3_product_name(selected: SelectedExposure) -> str:
+    exposure_id = selected.exposure.exposure_id
+    if not exposure_id:
+        raise PipelineExecutionError("Cannot name a TSO3 association without an exposure identifier.")
+    return f"{exposure_id}_tso3"
+
+
+def _association_record(
+    association: Stage3Association, readiness: Stage3Readiness
+) -> dict[str, Any]:
+    return {
+        "path": str(association.path),
+        "content_sha256": association.content_sha256,
+        "product_name": association.product_name,
+        "official_rule": "jwst.associations.asn_from_list.DMS_Level3_Base",
+        "member_calints_paths": [str(path) for path in association.member_paths],
+        "upstream_stage2_run_ids": list(readiness.upstream_stage2_run_ids),
+    }
+
+
 def _resume_identity(
     config: WriteConfig,
     selected: SelectedProduct,
@@ -733,6 +956,28 @@ def _stage2_file_record(path: Path) -> dict[str, Any]:
         "product_type": product_type,
         "role": role,
         "future_tso3_association_input": future_tso3_input,
+    }
+
+
+def _stage3_file_record(path: Path) -> dict[str, Any]:
+    """Classify the actual output of a TSO3 run without assuming a fixed set."""
+    if path.name.endswith("_x1dints.fits"):
+        product_type = "x1dints"
+        role = "tso3_combined_extracted_spectrum"
+    elif path.name.endswith("_whtlt.ecsv"):
+        product_type = "whtlt"
+        role = "tso3_white_light_curve"
+    elif path.name.endswith("_crfints.fits"):
+        product_type = "crfints"
+        role = "tso3_outlier_flagged_integrations"
+    else:
+        product_type = path.suffix.removeprefix(".") or "unknown"
+        role = "tso3_output"
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "product_type": product_type,
+        "role": role,
     }
 
 

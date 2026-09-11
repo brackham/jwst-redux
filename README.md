@@ -37,6 +37,7 @@ The current write milestone uses the explicit scientific-dataset and exposure se
 ```bash
 jwst-redux run configs/toi3884.yaml
 jwst-redux run configs/toi3884.yaml --through stage2
+jwst-redux run configs/toi3884.yaml --through stage3
 jwst-redux run configs/toi3884.yaml --overwrite
 ```
 
@@ -45,9 +46,11 @@ with normal defaults and writes `_rate` and `_rateints` products under `stage1/`
 successful manifest entry plus intact outputs skips work independently for each segment. `--through
 stage2` resolves each successful `_rateints` input from the manifest and runs the official
 `jwst.pipeline.Spec2Pipeline`, producing `_calints` and `_x1dints` under `stage2/`. A failure stops
-at that segment and is recorded; a rerun resumes prior completed segments. Once all segments have
-intact `_calints` outputs, the run reports Stage-3 readiness only: association construction and
-`Tso3Pipeline` execution are still unimplemented. The CRDS cache remains external to this workspace.
+at that segment and is recorded; a rerun resumes prior completed segments. `--through stage3`
+resolves every selected segment's `_calints` directly from successful Stage-2 manifest records,
+writes an official JWST Level-3 association under `stage3/associations/`, and calls
+`jwst.pipeline.Tso3Pipeline`. Association creation and TSO3 execution are resumable from their
+member/run identity and intact recorded outputs. The CRDS cache remains external to this workspace.
 
 The remaining workflow commands are scaffolded:
 

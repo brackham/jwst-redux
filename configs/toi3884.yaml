@@ -30,6 +30,7 @@ pipeline:
   crds_context: auto
   overrides: {}
   spec2_overrides: {}
+  tso3_overrides: {}
 
 output:
   root: ./work/toi3884

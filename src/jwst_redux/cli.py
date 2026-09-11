@@ -19,6 +19,7 @@ from .stage1 import (
     SegmentWorkflowResult,
     Stage1WorkflowResult,
     Stage2WorkflowResult,
+    Stage3WorkflowResult,
     download_selected,
     run_selected_through,
 )
@@ -30,6 +31,7 @@ console = Console()
 class ThroughStage(str, Enum):
     stage1 = "stage1"
     stage2 = "stage2"
+    stage3 = "stage3"
 
 
 def _config(path: Path) -> dict:
@@ -92,7 +94,7 @@ def run(
         help="Redownload the raw input and rerun all requested stages.",
     ),
 ) -> None:
-    """Run every segment of the selected exposure through Stage 1 or Stage 2."""
+    """Run every segment of the selected exposure through the requested stage."""
     try:
         result = run_selected_through(
             load_write_config(config),
@@ -103,11 +105,13 @@ def run(
         _abort(error)
     for segment in result.segments:
         _print_segment_result(segment)
-    if result.stage3_readiness is not None:
+    if result.stage3 is not None:
+        _print_stage3_result(result.stage3)
+    elif result.stage3_readiness is not None:
         console.print(
             "[green]Stage 3 ready:[/] "
             f"{len(result.stage3_readiness.calints_inputs)} intact _calints inputs recorded; "
-            "association creation and Tso3Pipeline are not run."
+            "run with --through stage3 to create the association and execute Tso3Pipeline."
         )
     console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
 
@@ -148,6 +152,19 @@ def _print_stage2_result(result: Stage2WorkflowResult) -> None:
             else "per-exposure extracted spectrum; not a TSO3 association input"
         )
         console.print(f"  {output} ({_format_bytes(output.stat().st_size)}); {role}")
+    console.print(f"CRDS context: {result.crds_context}")
+    console.print(f"Pipeline log: {result.log_path}")
+
+
+def _print_stage3_result(result: Stage3WorkflowResult) -> None:
+    console.print(f"Stage 3 association: {result.association.path}")
+    console.print(f"Association SHA-256: {result.association.content_sha256}")
+    if result.status == "skipped":
+        console.print("[green]Tso3Pipeline skipped:[/] matching successful manifest run found.")
+    else:
+        console.print(f"[green]Tso3Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
+    for output in result.outputs:
+        console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
     console.print(f"CRDS context: {result.crds_context}")
     console.print(f"Pipeline log: {result.log_path}")
 
@@ -346,5 +363,5 @@ def _show(value: object | None) -> str:
 
 
 def _abort(error: Exception) -> None:
-    console.print(f"[bold red]Error:[/] {error}", stderr=True)
+    Console(stderr=True).print(f"[bold red]Error:[/] {error}")
     raise typer.Exit(code=1)

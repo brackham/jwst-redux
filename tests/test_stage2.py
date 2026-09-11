@@ -100,6 +100,7 @@ def _case(
         crds_context="auto",
         parameter_overrides={},
         spec2_parameter_overrides={},
+        tso3_parameter_overrides={},
         overwrite=False,
     )
     return config, discovery
