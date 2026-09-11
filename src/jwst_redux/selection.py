@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from .config import Stage1SelectionConfig
+from .config import ExposureSelectionConfig
 from .exceptions import SelectionError
-from .models import ScienceDataset, SelectedProduct
+from .models import ScienceDataset, SelectedExposure, SelectedProduct
+from .planning.associations import validate_exposure_segments
 
 T = TypeVar("T")
 
 
-def select_stage1_product(
-    datasets: tuple[ScienceDataset, ...], selection: Stage1SelectionConfig
-) -> SelectedProduct:
-    """Select exactly one configured product by traversing dataset/exposure/product children."""
+def select_exposure(
+    datasets: tuple[ScienceDataset, ...], selection: ExposureSelectionConfig
+) -> SelectedExposure:
+    """Select one configured exposure and validate its complete ordered segment set."""
     identity = {
         "program_id": selection.program_id,
         "observation_id": selection.observation_id,
@@ -38,23 +39,28 @@ def select_stage1_product(
         {"exposure_id": selection.exposure_id, "dataset_id": dataset.dataset_id},
     )
 
-    matching_products = [
-        product
-        for product in exposure.products
-        if product.segment_number == selection.segment_number
-        and product.filename == selection.filename
-        and product.suffix == "_uncal"
-    ]
-    product = _exactly_one(
-        matching_products,
-        "_uncal product",
-        {
-            "filename": selection.filename,
-            "segment_number": selection.segment_number,
-            "exposure_id": exposure.exposure_id,
-        },
+    products = tuple(
+        sorted(
+            (product for product in exposure.products if product.suffix == "_uncal"),
+            key=lambda product: (product.segment_number or 0, product.filename),
+        )
     )
-    return SelectedProduct(dataset=dataset, exposure=exposure, product=product)
+    if not products:
+        raise SelectionError(f"Selected exposure {exposure.exposure_id} has no _uncal products.")
+    validate_exposure_segments(exposure, products)
+    return SelectedExposure(dataset=dataset, exposure=exposure, products=products)
+
+
+def select_stage1_product(
+    datasets: tuple[ScienceDataset, ...], selection: ExposureSelectionConfig
+) -> SelectedProduct:
+    """Return the sole selected product for backwards-compatible single-product callers."""
+    selected = select_exposure(datasets, selection)
+    if len(selected.products) != 1:
+        raise SelectionError(
+            "The selected exposure has multiple segments; use selected-exposure execution instead."
+        )
+    return SelectedProduct(selected.dataset, selected.exposure, selected.products[0])
 
 
 def _exactly_one(matches: list[T], noun: str, selector: dict) -> T:

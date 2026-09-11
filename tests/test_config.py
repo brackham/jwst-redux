@@ -24,15 +24,13 @@ def test_validate_toi3884_discovery_config() -> None:
     assert config.start_from == "uncal"
 
 
-def test_validate_toi3884_stage1_selection() -> None:
+def test_validate_toi3884_exposure_selection() -> None:
     path = Path(__file__).parents[1] / "configs" / "toi3884.yaml"
     config = load_write_config(path)
     assert config.selection.program_id == "05799"
     assert config.selection.observation_id == "001"
     assert config.selection.visit_number == "001"
     assert config.selection.exposure_id == "jw05799001001_04101_00001"
-    assert config.selection.segment_number == 1
-    assert config.selection.filename.endswith("-seg001_nis_uncal.fits")
     assert config.crds_context == "auto"
     assert config.parameter_overrides == {}
     assert config.spec2_parameter_overrides == {}

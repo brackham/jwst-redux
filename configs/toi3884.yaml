@@ -23,8 +23,6 @@ stage1:
     observation_id: 1
     visit_number: 1
     exposure_id: jw05799001001_04101_00001
-    segment_number: 1
-    filename: jw05799001001_04101_00001-seg001_nis_uncal.fits
 
 pipeline:
   stages: auto
@@ -41,4 +39,4 @@ options:
   overwrite: false
   dry_run: false
 
-# The Stage 1 smoke test above is intentionally narrower than discovery.
+# This explicit selector processes every validated segment of the exposure in order.

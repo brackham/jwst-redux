@@ -6,8 +6,8 @@ import pytest
 
 from jwst_redux.config import (
     DiscoveryConfig,
+    ExposureSelectionConfig,
     QueryConfig,
-    Stage1SelectionConfig,
     WriteConfig,
 )
 from jwst_redux.datasets import build_science_datasets
@@ -76,13 +76,11 @@ def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResul
     )
     config = WriteConfig(
         discovery=discovery,
-        selection=Stage1SelectionConfig(
+        selection=ExposureSelectionConfig(
             program_id="05799",
             observation_id="001",
             visit_number="001",
             exposure_id=exposure.exposure_id,
-            segment_number=1,
-            filename=product.filename,
         ),
         crds_context="auto",
         parameter_overrides={},

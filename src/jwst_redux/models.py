@@ -66,6 +66,15 @@ class SelectedProduct:
 
 
 @dataclass(frozen=True)
+class SelectedExposure:
+    """One explicitly selected exposure and all of its starting products."""
+
+    dataset: ScienceDataset
+    exposure: Exposure
+    products: tuple[Product, ...]
+
+
+@dataclass(frozen=True)
 class ReductionGroup:
     """Exposures sharing one compatible reduction/association path."""
 

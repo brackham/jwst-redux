@@ -42,7 +42,7 @@ def build_compatible_groups(dataset: ScienceDataset) -> tuple[ReductionGroup, ..
                 raise PlanningError(
                     f"No starting products found for exposure {exposure.exposure_id}."
                 )
-            _validate_segments(exposure, exposure_products)
+            validate_exposure_segments(exposure, exposure_products)
             group_products.extend(exposure_products)
 
         compatibility = tuple(zip(COMPATIBILITY_FIELDS, key, strict=True))
@@ -74,7 +74,8 @@ def _compatibility_key(exposure: Exposure) -> tuple[str, ...]:
     return values
 
 
-def _validate_segments(exposure: Exposure, products: tuple[Product, ...]) -> None:
+def validate_exposure_segments(exposure: Exposure, products: tuple[Product, ...]) -> None:
+    """Require one unambiguous starting product for each expected exposure segment."""
     expected = exposure.segment_count
     segment_numbers = [product.segment_number for product in products]
 

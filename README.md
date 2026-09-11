@@ -30,25 +30,24 @@ For the TOI-3884 example, `query.archive_target_names` records the target names 
 (`TOI-3884` and `TOI-3884b`) while `query.target` retains the scientific target identity. The optional
 `query.proposal_ids` field may be `null` for all proposals, one proposal ID, or a YAML list of IDs.
 
-The current write milestones are deliberately restricted by `stage1.selection` in the YAML to
-`jw05799001001_04101_00001-seg001_nis_uncal.fits`:
+The current write milestone uses the explicit scientific-dataset and exposure selector in
+`stage1.selection`. The TOI-3884 configuration selects GO-5799 Obs 001 / Visit 001,
+`jw05799001001_04101_00001`; all three validated `_uncal` segments are processed in numeric order:
 
 ```bash
-jwst-redux download configs/toi3884.yaml
 jwst-redux run configs/toi3884.yaml
 jwst-redux run configs/toi3884.yaml --through stage2
 jwst-redux run configs/toi3884.yaml --overwrite
 ```
 
-`download` stores only that selected product under `work/toi3884/raw/`. `run` reuses or downloads it,
-then runs the official `jwst.pipeline.Detector1Pipeline` with normal defaults and writes `_rate` and
-`_rateints` products under `stage1/`. A matching successful manifest entry plus intact outputs causes
-a repeated run to skip Detector1. `--through stage2` resolves the successful `_rateints` input from
-the manifest and runs the official `jwst.pipeline.Spec2Pipeline`, producing `_calints` and
-`_x1dints` under `stage2/`. The `_calints` product is the future TSO3 association member;
-`_x1dints` is the per-exposure extracted spectrum and is not a TSO3 association input. Repeating an
-unchanged command skips every completed stage; `--overwrite` forces download and all requested
-processing stages. The CRDS cache remains external to this workspace.
+`run` reuses or downloads each segment, then runs the official `jwst.pipeline.Detector1Pipeline`
+with normal defaults and writes `_rate` and `_rateints` products under `stage1/`. A matching
+successful manifest entry plus intact outputs skips work independently for each segment. `--through
+stage2` resolves each successful `_rateints` input from the manifest and runs the official
+`jwst.pipeline.Spec2Pipeline`, producing `_calints` and `_x1dints` under `stage2/`. A failure stops
+at that segment and is recorded; a rerun resumes prior completed segments. Once all segments have
+intact `_calints` outputs, the run reports Stage-3 readiness only: association construction and
+`Tso3Pipeline` execution are still unimplemented. The CRDS cache remains external to this workspace.
 
 The remaining workflow commands are scaffolded:
 

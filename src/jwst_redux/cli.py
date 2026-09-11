@@ -16,6 +16,7 @@ from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
 from .stage1 import (
+    SegmentWorkflowResult,
     Stage1WorkflowResult,
     Stage2WorkflowResult,
     download_selected,
@@ -91,7 +92,7 @@ def run(
         help="Redownload the raw input and rerun all requested stages.",
     ),
 ) -> None:
-    """Run the single selected product through Stage 1 or Stage 2."""
+    """Run every segment of the selected exposure through Stage 1 or Stage 2."""
     try:
         result = run_selected_through(
             load_write_config(config),
@@ -100,10 +101,22 @@ def run(
         )
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
+    for segment in result.segments:
+        _print_segment_result(segment)
+    if result.stage3_readiness is not None:
+        console.print(
+            "[green]Stage 3 ready:[/] "
+            f"{len(result.stage3_readiness.calints_inputs)} intact _calints inputs recorded; "
+            "association creation and Tso3Pipeline are not run."
+        )
+    console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
+
+
+def _print_segment_result(result: SegmentWorkflowResult) -> None:
+    console.print(f"[bold]Segment {result.stage1.selected.product.segment_number:03d}[/]")
     _print_stage1_result(result.stage1)
     if result.stage2 is not None:
         _print_stage2_result(result.stage2)
-    console.print(f"Manifest: {result.stage1.log_path.parent.parent / 'manifest.json'}")
 
 
 def _print_stage1_result(result: Stage1WorkflowResult) -> None:

@@ -35,23 +35,21 @@ class DiscoveryConfig:
 
 
 @dataclass(frozen=True)
-class Stage1SelectionConfig:
-    """Exact scientific dataset, exposure, and product selected for Stage 1."""
+class ExposureSelectionConfig:
+    """Exact scientific dataset and exposure selected for sequential processing."""
 
     program_id: str
     observation_id: str
     visit_number: str
     exposure_id: str
-    segment_number: int
-    filename: str
 
 
 @dataclass(frozen=True)
 class WriteConfig:
-    """Validated configuration for the single-product pipeline milestones."""
+    """Validated configuration for selected-exposure pipeline execution."""
 
     discovery: DiscoveryConfig
-    selection: Stage1SelectionConfig
+    selection: ExposureSelectionConfig
     crds_context: str
     parameter_overrides: dict[str, Any]
     spec2_parameter_overrides: dict[str, Any]
@@ -107,19 +105,13 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
 
 
 def load_write_config(path: str | Path) -> WriteConfig:
-    """Load the exact single-product selection and Stage 1 execution settings."""
+    """Load the exact selected exposure and pipeline execution settings."""
     discovery = load_discovery_config(path)
     data = load_config(path)
     stage1 = _mapping(data, "stage1")
     selection = _mapping(stage1, "selection")
     pipeline = _mapping(data, "pipeline")
     options = _mapping(data, "options")
-
-    segment_number = selection.get("segment_number")
-    if not isinstance(segment_number, int) or isinstance(segment_number, bool):
-        raise ConfigurationError("Configuration field 'stage1.selection.segment_number' must be an integer.")
-    if segment_number < 1:
-        raise ConfigurationError("Configuration field 'stage1.selection.segment_number' must be positive.")
 
     overrides = pipeline.get("overrides", {})
     if not isinstance(overrides, dict):
@@ -135,13 +127,11 @@ def load_write_config(path: str | Path) -> WriteConfig:
 
     return WriteConfig(
         discovery=discovery,
-        selection=Stage1SelectionConfig(
+        selection=ExposureSelectionConfig(
             program_id=_required_identifier(selection, "program_id", width=5),
             observation_id=_required_identifier(selection, "observation_id", width=3),
             visit_number=_required_identifier(selection, "visit_number", width=3),
             exposure_id=_required_string(selection, "exposure_id"),
-            segment_number=segment_number,
-            filename=_required_string(selection, "filename"),
         ),
         crds_context=str(pipeline.get("crds_context", "auto")).strip().lower(),
         parameter_overrides=dict(overrides),

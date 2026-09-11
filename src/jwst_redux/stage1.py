@@ -13,7 +13,7 @@ from .config import WriteConfig
 from .exceptions import JWSTReduxError, PipelineExecutionError
 from .mast.download import DownloadResult, ProductDownloader, ensure_downloaded
 from .mast.query import DiscoveryResult, discover
-from .models import SelectedProduct
+from .models import SelectedExposure, SelectedProduct
 from .pipeline.runner import (
     PipelineCallable,
     existing_stage1_outputs,
@@ -25,7 +25,7 @@ from .pipeline.runner import (
     run_spec2,
 )
 from .provenance import ManifestStore, make_run_key, software_versions, utc_now
-from .selection import select_stage1_product
+from .selection import select_exposure, select_stage1_product
 from .workspace import Workspace
 
 Discoverer = Callable[[Any], DiscoveryResult]
@@ -65,8 +65,25 @@ class Stage2WorkflowResult:
 
 @dataclass(frozen=True)
 class ThroughWorkflowResult:
+    segments: tuple[SegmentWorkflowResult, ...]
+    stage3_readiness: Stage3Readiness | None = None
+
+
+@dataclass(frozen=True)
+class SegmentWorkflowResult:
+    """The completed or resumed pipeline work for one exposure segment."""
+
     stage1: Stage1WorkflowResult
     stage2: Stage2WorkflowResult | None = None
+
+
+@dataclass(frozen=True)
+class Stage3Readiness:
+    """Intact Stage 2 products available for a future official TSO3 association."""
+
+    selected: SelectedExposure
+    calints_inputs: tuple[Path, ...]
+    upstream_stage2_run_ids: tuple[str, ...]
 
 
 def download_selected(
@@ -129,9 +146,14 @@ def run_selected_stage1(
     downloader: ProductDownloader | None = None,
     pipeline: PipelineCallable | None = None,
     context_resolver: ContextResolver | None = None,
+    _selected: SelectedProduct | None = None,
 ) -> Stage1WorkflowResult:
-    """Download and run Detector1 for exactly the configured hierarchy selection."""
-    selected = _discover_selected(config, discoverer)
+    """Run Detector1 for a single-product selected exposure.
+
+    Multi-segment callers should use :func:`run_selected_through`, which invokes this
+    implementation once per validated segment.
+    """
+    selected = _selected or _discover_selected(config, discoverer)
     workspace = Workspace(config.discovery.output_root.resolve())
     workspace.create()
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
@@ -279,26 +301,43 @@ def run_selected_through(
     spec2_pipeline: PipelineCallable | None = None,
     context_resolver: ContextResolver | None = None,
 ) -> ThroughWorkflowResult:
-    """Run the selected product through the requested official pipeline stage."""
+    """Run every validated segment of the selected exposure in segment order."""
     if through not in {"stage1", "stage2"}:
         raise PipelineExecutionError(f"Unsupported --through stage: {through}")
-    stage1 = run_selected_stage1(
-        config,
-        overwrite=overwrite,
-        discoverer=discoverer,
-        downloader=downloader,
-        pipeline=detector1_pipeline,
-        context_resolver=context_resolver,
+    selected_exposure = _discover_selected_exposure(config, discoverer)
+    segment_results: list[SegmentWorkflowResult] = []
+    for product in selected_exposure.products:
+        selected = SelectedProduct(
+            dataset=selected_exposure.dataset,
+            exposure=selected_exposure.exposure,
+            product=product,
+        )
+        stage1 = run_selected_stage1(
+            config,
+            overwrite=overwrite,
+            discoverer=None,
+            downloader=downloader,
+            pipeline=detector1_pipeline,
+            context_resolver=context_resolver,
+            _selected=selected,
+        )
+        stage2 = (
+            _run_selected_stage2(
+                config,
+                stage1,
+                overwrite=overwrite,
+                pipeline=spec2_pipeline,
+            )
+            if through == "stage2"
+            else None
+        )
+        segment_results.append(SegmentWorkflowResult(stage1=stage1, stage2=stage2))
+    readiness = (
+        stage3_readiness(config, selected_exposure=selected_exposure)
+        if through == "stage2"
+        else None
     )
-    if through == "stage1":
-        return ThroughWorkflowResult(stage1=stage1)
-    stage2 = _run_selected_stage2(
-        config,
-        stage1,
-        overwrite=overwrite,
-        pipeline=spec2_pipeline,
-    )
-    return ThroughWorkflowResult(stage1=stage1, stage2=stage2)
+    return ThroughWorkflowResult(segments=tuple(segment_results), stage3_readiness=readiness)
 
 
 def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:
@@ -331,6 +370,84 @@ def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:
         or path.stat().st_size != size
     ):
         raise PipelineExecutionError(f"Recorded Stage 1 input is missing or changed: {path}")
+    return path
+
+
+def stage3_readiness(
+    config: WriteConfig,
+    *,
+    discoverer: Discoverer | None = None,
+    selected_exposure: SelectedExposure | None = None,
+) -> Stage3Readiness:
+    """Return all intact `_calints` products required by a future TSO3 association.
+
+    This is intentionally a manifest validation only: association construction and
+    ``Tso3Pipeline`` execution remain separate future milestones.
+    """
+    selected = selected_exposure or _discover_selected_exposure(config, discoverer)
+    workspace = Workspace(config.discovery.output_root.resolve())
+    if not workspace.manifest.is_file():
+        raise PipelineExecutionError(
+            f"Stage 3 is not ready: no manifest exists for {selected.exposure.exposure_id}."
+        )
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    calints_inputs: list[Path] = []
+    run_ids: list[str] = []
+    for product in selected.products:
+        entry = manifest.successful_entry(
+            "stage2",
+            {
+                **_base_entry(
+                    config,
+                    SelectedProduct(selected.dataset, selected.exposure, product),
+                    pipeline_class="jwst.pipeline.Spec2Pipeline",
+                    parameter_overrides=config.spec2_parameter_overrides,
+                ),
+            },
+            {},
+        )
+        if entry is None:
+            raise PipelineExecutionError(
+                "Stage 3 is not ready: no intact successful Stage 2 run for "
+                f"segment {product.segment_number:03d} of {selected.exposure.exposure_id}."
+            )
+        calints = _manifest_stage2_calints(entry)
+        calints_inputs.append(calints)
+        run_ids.append(str(entry["run_id"]))
+    return Stage3Readiness(
+        selected=selected,
+        calints_inputs=tuple(calints_inputs),
+        upstream_stage2_run_ids=tuple(run_ids),
+    )
+
+
+def _manifest_stage2_calints(entry: dict[str, Any]) -> Path:
+    records = entry.get("outputs")
+    if not isinstance(records, list):
+        raise PipelineExecutionError("Successful Stage 2 manifest entry has no output records.")
+    candidates = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and (
+            record.get("product_type") == "calints"
+            or str(record.get("path", "")).endswith("_calints.fits")
+        )
+    ]
+    if len(candidates) != 1:
+        raise PipelineExecutionError(
+            "Successful Stage 2 manifest entry must record exactly one _calints product."
+        )
+    record = candidates[0]
+    path = Path(str(record["path"]))
+    size = record.get("size_bytes")
+    if (
+        not path.is_file()
+        or not isinstance(size, int)
+        or size <= 0
+        or path.stat().st_size != size
+    ):
+        raise PipelineExecutionError(f"Recorded Stage 2 input is missing or changed: {path}")
     return path
 
 
@@ -523,6 +640,13 @@ def _discover_selected(
 ) -> SelectedProduct:
     result = (discoverer or discover)(config.discovery)
     return select_stage1_product(result.datasets, config.selection)
+
+
+def _discover_selected_exposure(
+    config: WriteConfig, discoverer: Discoverer | None
+) -> SelectedExposure:
+    result = (discoverer or discover)(config.discovery)
+    return select_exposure(result.datasets, config.selection)
 
 
 def _base_entry(

@@ -6,24 +6,24 @@ import pytest
 
 from jwst_redux.config import (
     DiscoveryConfig,
+    ExposureSelectionConfig,
     QueryConfig,
-    Stage1SelectionConfig,
     WriteConfig,
 )
 from jwst_redux.datasets import build_science_datasets
-from jwst_redux.exceptions import PipelineExecutionError
+from jwst_redux.exceptions import PipelineExecutionError, PlanningError
 from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 from jwst_redux.models import Product
 from jwst_redux.pipeline.runner import expected_stage1_outputs, expected_stage2_outputs
-from jwst_redux.stage1 import resolve_stage1_rateints, run_selected_through
+from jwst_redux.stage1 import run_selected_through, stage3_readiness
 
 
 class FakeDownloader:
     def __init__(self) -> None:
-        self.calls = 0
+        self.calls: list[str] = []
 
     def download_product(self, uri: str, destination: Path):
-        self.calls += 1
+        self.calls.append(uri)
         destination.write_bytes(b"raw!")
         return "COMPLETE", None, None
 
@@ -40,40 +40,43 @@ class FakeDetector1:
 
 
 class FakeSpec2:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-        self.calls: list[tuple[Path, Path, dict]] = []
+    def __init__(self, *, fail_segment: int | None = None) -> None:
+        self.fail_segment = fail_segment
+        self.calls: list[Path] = []
 
     def __call__(self, input_path: Path, output_dir: Path, overrides: dict) -> None:
-        self.calls.append((input_path, output_dir, overrides))
+        self.calls.append(input_path)
+        segment = int(input_path.name.split("-seg", maxsplit=1)[1][:3])
         print("2026-01-01 00:00:00,000 - stpipe.step - INFO - Step Spec2Pipeline parameters are:")
         print("  save_results: True")
-        print("  steps:")
-        print("    extract_1d:")
-        print("      skip: False")
-        print("2026-01-01 00:00:00,001 - test - WARNING - synthetic Spec2 warning")
-        if self.fail:
-            raise RuntimeError("synthetic Spec2 failure")
+        if segment == self.fail_segment:
+            raise RuntimeError(f"synthetic Spec2 failure for segment {segment}")
         calints, x1dints = expected_stage2_outputs(input_path, output_dir)
         calints.write_bytes(b"calints")
         x1dints.write_bytes(b"x1dints")
 
 
-def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResult]:
-    product = Product(
-        uri="mast:JWST/product/jw05799001001_04101_00001-seg001_nis_uncal.fits",
-        filename="jw05799001001_04101_00001-seg001_nis_uncal.fits",
-        size_bytes=4,
-        exposure_id="jw05799001001_04101_00001",
-        suffix="_uncal",
-        product_type="science",
-        segment_number=1,
-        access="PUBLIC",
+def _case(
+    tmp_path: Path, exposure_records, segments=(1, 2, 3), *, segment_count: int | None = None
+) -> tuple[WriteConfig, DiscoveryResult]:
+    exposure_id = "jw05799001001_04101_00001"
+    products = tuple(
+        Product(
+            uri=f"mast:JWST/product/{exposure_id}-seg{segment:03d}_nis_uncal.fits",
+            filename=f"{exposure_id}-seg{segment:03d}_nis_uncal.fits",
+            size_bytes=4,
+            exposure_id=exposure_id,
+            suffix="_uncal",
+            product_type="science",
+            segment_number=segment,
+            access="PUBLIC",
+        )
+        for segment in segments
     )
     exposure = replace(
         normalize_exposure(exposure_records[0]),
-        segment_count=1,
-        products=(product,),
+        segment_count=len(segments) if segment_count is None else segment_count,
+        products=products,
     )
     discovery = DiscoveryResult(datasets=build_science_datasets((exposure,)))
     config = WriteConfig(
@@ -88,13 +91,11 @@ def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResul
             start_from="uncal",
             output_root=tmp_path / "work" / "toi3884",
         ),
-        selection=Stage1SelectionConfig(
+        selection=ExposureSelectionConfig(
             program_id="05799",
             observation_id="001",
             visit_number="001",
-            exposure_id=exposure.exposure_id,
-            segment_number=1,
-            filename=product.filename,
+            exposure_id=exposure_id,
         ),
         crds_context="auto",
         parameter_overrides={},
@@ -104,103 +105,8 @@ def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResul
     return config, discovery
 
 
-def test_stage2_input_is_resolved_from_successful_stage1_manifest(tmp_path: Path) -> None:
-    recorded = tmp_path / "manifest-selected_rateints.fits"
-    recorded.write_bytes(b"recorded")
-    guessed = tmp_path / "guessed_rateints.fits"
-    guessed.write_bytes(b"guessed")
-    entry = {
-        "operation": "stage1",
-        "status": "success",
-        "outputs": [
-            {
-                "path": str(recorded),
-                "size_bytes": recorded.stat().st_size,
-                "product_type": "rateints",
-            }
-        ],
-    }
-
-    assert resolve_stage1_rateints(entry) == recorded
-
-    entry["outputs"] = []
-    with pytest.raises(PipelineExecutionError, match="exactly one"):
-        resolve_stage1_rateints(entry)
-
-
-def test_stage2_invocation_outputs_and_provenance(tmp_path, exposure_records) -> None:
-    config, discovery = _case(tmp_path, exposure_records)
-    detector1 = FakeDetector1()
-    spec2 = FakeSpec2()
-
-    result = run_selected_through(
-        config,
-        through="stage2",
-        discoverer=lambda _: discovery,
-        downloader=FakeDownloader(),
-        detector1_pipeline=detector1,
-        spec2_pipeline=spec2,
-        context_resolver=lambda _: "jwst_test.pmap",
-    )
-
-    assert result.stage2 is not None
-    stage2 = result.stage2
-    assert spec2.calls == [(stage2.input_path, config.discovery.output_root.resolve() / "stage2", {})]
-    manifest = json.loads(
-        (config.discovery.output_root / "manifest.json").read_text(encoding="utf-8")
-    )
-    entry = manifest["runs"][-1]
-    assert entry["status"] == "success"
-    assert entry["pipeline_class"] == "jwst.pipeline.Spec2Pipeline"
-    assert entry["input_path"] == str(stage2.input_path)
-    assert entry["input_product_type"] == "rateints"
-    assert entry["upstream_stage1_run_id"] == result.stage1.manifest_entry["run_id"]
-    assert [output["product_type"] for output in entry["outputs"]] == [
-        "calints",
-        "x1dints",
-    ]
-    assert entry["outputs"][0]["future_tso3_association_input"] is True
-    assert entry["outputs"][1]["future_tso3_association_input"] is False
-    assert entry["pipeline_configuration"]["resolved_parameters"] == {
-        "save_results": True,
-        "steps": {"extract_1d": {"skip": False}},
-    }
-    assert entry["pipeline_configuration"]["invocation"]["explicit_parameter_overrides"] == {}
-    assert entry["pipeline_messages"]["warning_count"] == 1
-    assert entry["pipeline_messages"]["warnings"] == ["synthetic Spec2 warning"]
-
-
-def test_stage2_failure_is_recorded(tmp_path, exposure_records) -> None:
-    config, discovery = _case(tmp_path, exposure_records)
-
-    with pytest.raises(PipelineExecutionError, match="Spec2Pipeline failed"):
-        run_selected_through(
-            config,
-            through="stage2",
-            discoverer=lambda _: discovery,
-            downloader=FakeDownloader(),
-            detector1_pipeline=FakeDetector1(),
-            spec2_pipeline=FakeSpec2(fail=True),
-            context_resolver=lambda _: "jwst_test.pmap",
-        )
-
-    manifest = json.loads(
-        (config.discovery.output_root / "manifest.json").read_text(encoding="utf-8")
-    )
-    entry = manifest["runs"][-1]
-    assert entry["operation"] == "stage2"
-    assert entry["status"] == "failed"
-    assert "synthetic Spec2 failure" in entry["error"]
-    assert entry["pipeline_messages"]["warning_count"] == 1
-    assert "synthetic Spec2 failure" in Path(entry["log_path"]).read_text(encoding="utf-8")
-
-
-def test_stage2_resume_and_overwrite(tmp_path, exposure_records) -> None:
-    config, discovery = _case(tmp_path, exposure_records)
-    downloader = FakeDownloader()
-    detector1 = FakeDetector1()
-    spec2 = FakeSpec2()
-    arguments = {
+def _arguments(discovery, downloader, detector1, spec2):
+    return {
         "through": "stage2",
         "discoverer": lambda _: discovery,
         "downloader": downloader,
@@ -209,26 +115,102 @@ def test_stage2_resume_and_overwrite(tmp_path, exposure_records) -> None:
         "context_resolver": lambda _: "jwst_test.pmap",
     }
 
-    first = run_selected_through(config, **arguments)
+
+def test_selected_exposure_reuses_completed_segment_then_runs_remaining_in_order(
+    tmp_path, exposure_records
+) -> None:
+    config, discovery = _case(tmp_path, exposure_records)
+    completed_config, completed_discovery = _case(tmp_path, exposure_records, segments=(1,))
+    downloader = FakeDownloader()
+    detector1 = FakeDetector1()
+    spec2 = FakeSpec2()
+
+    run_selected_through(
+        completed_config,
+        **_arguments(completed_discovery, downloader, detector1, spec2),
+    )
+    detector1.calls.clear()
+    spec2.calls.clear()
+    result = run_selected_through(config, **_arguments(discovery, downloader, detector1, spec2))
+
+    assert [segment.stage1.selected.product.segment_number for segment in result.segments] == [1, 2, 3]
+    assert result.segments[0].stage1.status == "skipped"
+    assert result.segments[0].stage2 is not None and result.segments[0].stage2.status == "skipped"
+    assert [path.name for path in detector1.calls] == [
+        "jw05799001001_04101_00001-seg002_nis_uncal.fits",
+        "jw05799001001_04101_00001-seg003_nis_uncal.fits",
+    ]
+    assert [path.name for path in spec2.calls] == [
+        "jw05799001001_04101_00001-seg002_nis_rateints.fits",
+        "jw05799001001_04101_00001-seg003_nis_rateints.fits",
+    ]
+    assert result.stage3_readiness is not None
+    assert [path.name for path in result.stage3_readiness.calints_inputs] == [
+        "jw05799001001_04101_00001-seg001_nis_calints.fits",
+        "jw05799001001_04101_00001-seg002_nis_calints.fits",
+        "jw05799001001_04101_00001-seg003_nis_calints.fits",
+    ]
+
+
+def test_partial_failure_stops_sequence_and_later_run_resumes_each_segment(
+    tmp_path, exposure_records
+) -> None:
+    config, discovery = _case(tmp_path, exposure_records)
+    downloader = FakeDownloader()
+    first_detector1 = FakeDetector1()
+    with pytest.raises(PipelineExecutionError, match="segment 2"):
+        run_selected_through(
+            config,
+            **_arguments(discovery, downloader, first_detector1, FakeSpec2(fail_segment=2)),
+        )
+
     manifest_path = config.discovery.output_root / "manifest.json"
-    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for entry in legacy_manifest["runs"]:
-        if entry["status"] == "success":
-            entry["run_key"] = f"legacy-{entry['operation']}"
-    manifest_path.write_text(json.dumps(legacy_manifest), encoding="utf-8")
-    second = run_selected_through(config, **arguments)
-    third = run_selected_through(config, overwrite=True, **arguments)
+    failed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert [(entry["operation"], entry["segment_number"], entry["status"]) for entry in failed_manifest["runs"]] == [
+        ("stage1", 1, "success"),
+        ("stage2", 1, "success"),
+        ("stage1", 2, "success"),
+        ("stage2", 2, "failed"),
+    ]
 
-    assert first.stage2 is not None and first.stage2.status == "success"
-    assert second.stage1.status == "skipped"
-    assert second.stage2 is not None and second.stage2.status == "skipped"
-    assert second.stage2.elapsed_seconds == 0
-    assert third.stage2 is not None and third.stage2.status == "success"
-    assert downloader.calls == 2
-    assert len(detector1.calls) == 2
-    assert len(spec2.calls) == 2
+    second_detector1 = FakeDetector1()
+    second_spec2 = FakeSpec2()
+    result = run_selected_through(
+        config,
+        **_arguments(discovery, downloader, second_detector1, second_spec2),
+    )
+    assert [segment.stage1.status for segment in result.segments] == ["skipped", "skipped", "success"]
+    assert [segment.stage2.status for segment in result.segments if segment.stage2] == [
+        "skipped",
+        "success",
+        "success",
+    ]
+    assert [path.name for path in second_detector1.calls] == [
+        "jw05799001001_04101_00001-seg003_nis_uncal.fits"
+    ]
+    assert [path.name for path in second_spec2.calls] == [
+        "jw05799001001_04101_00001-seg002_nis_rateints.fits",
+        "jw05799001001_04101_00001-seg003_nis_rateints.fits",
+    ]
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    stage2_entries = [entry for entry in manifest["runs"] if entry["operation"] == "stage2"]
-    assert [entry["status"] for entry in stage2_entries] == ["success", "skipped", "success"]
-    assert stage2_entries[1]["resumed_from_run_id"] == stage2_entries[0]["run_id"]
+
+def test_selected_exposure_requires_complete_segment_set_before_writes(tmp_path, exposure_records) -> None:
+    config, incomplete = _case(tmp_path, exposure_records, segments=(1, 2), segment_count=3)
+
+    with pytest.raises(PlanningError, match=r"segments \[1, 2\].*expected \[1, 2, 3\]"):
+        run_selected_through(config, through="stage2", discoverer=lambda _: incomplete)
+
+    assert not config.discovery.output_root.exists()
+
+
+def test_stage3_readiness_requires_every_intact_calints_input(tmp_path, exposure_records) -> None:
+    config, discovery = _case(tmp_path, exposure_records)
+    run_selected_through(
+        config,
+        **_arguments(discovery, FakeDownloader(), FakeDetector1(), FakeSpec2()),
+    )
+    readiness = stage3_readiness(config, discoverer=lambda _: discovery)
+    readiness.calints_inputs[1].unlink()
+
+    with pytest.raises(PipelineExecutionError, match="segment 002"):
+        stage3_readiness(config, discoverer=lambda _: discovery)
