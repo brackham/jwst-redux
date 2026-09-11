@@ -18,6 +18,7 @@ venv/
 work/
 data/
 crds_cache/
+sandbox/
 *.fits
 *.fits.gz
 *.asdf
