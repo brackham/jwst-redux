@@ -10,18 +10,19 @@ from matplotlib import colors
 
 from .common import (
     Spectrum,
+    channel_classification_label,
     elapsed_hours,
     finite_median,
     flux_to_f_lambda,
     point_to_point_difference_ppt,
     product_title,
     relative_scatter_ppt,
-    retained_channel_label,
     robust_limits,
     robust_ppt_limit,
     save_figure,
     spectroscopic_time_series_display,
-    spectroscopic_time_series_quality_mask,
+    spectroscopic_time_series_science_quality_mask,
+    spectroscopic_time_series_validity_mask,
     valid_flux,
 )
 
@@ -227,7 +228,9 @@ def plot_spectroscopic_time_series(
             )
             axis.set_ylim(*window)
             continue
-        residual, good_channels, limit = spectroscopic_time_series_display(flux)
+        residual, valid_channels, science_quality_channels, limit = (
+            spectroscopic_time_series_display(flux)
+        )
         cmap = spectroscopic_time_series_colormap()
         image = axis.pcolormesh(
             elapsed_hours(spectra),
@@ -242,7 +245,7 @@ def plot_spectroscopic_time_series(
         axis.text(
             0.99,
             0.97,
-            retained_channel_label(good_channels),
+            channel_classification_label(valid_channels, science_quality_channels),
             transform=axis.transAxes,
             ha="right",
             va="top",
@@ -272,13 +275,19 @@ def plot_scatter_spectrum(
         if not wavelength.size:
             _no_window_data(axis, order, window)
             continue
-        good_channels = spectroscopic_time_series_quality_mask(flux)
-        scatter = relative_scatter_ppt(flux, good_channels)
+        valid_channels = spectroscopic_time_series_validity_mask(flux)
+        science_quality_channels = spectroscopic_time_series_science_quality_mask(flux)
+        scatter = relative_scatter_ppt(flux, valid_channels)
         axis.plot(wavelength, scatter, color="C3", linewidth=0.8)
         finite = scatter[np.isfinite(scatter)]
+        clipped_label = ""
         if finite.size:
             _, upper = robust_limits(finite)
-            axis.set_ylim(bottom=0, top=max(upper, 1.0))
+            upper = max(upper, 1.0)
+            axis.set_ylim(bottom=0, top=upper)
+            clipped_count = int(np.count_nonzero(finite > upper))
+            if clipped_count:
+                clipped_label = f"\nDisplay-clipped above {upper:.3g} ppt: {clipped_count}/{finite.size}"
         axis.set(
             title=f"Order {order}",
             xlabel="Wavelength [µm]",
@@ -288,7 +297,7 @@ def plot_scatter_spectrum(
         axis.text(
             0.99,
             0.97,
-            retained_channel_label(good_channels),
+            channel_classification_label(valid_channels, science_quality_channels) + clipped_label,
             transform=axis.transAxes,
             ha="right",
             va="top",
@@ -317,8 +326,9 @@ def plot_point_to_point_difference(
         if not wavelength.size:
             _no_window_data(axis, order, window)
             continue
-        good_channels = spectroscopic_time_series_quality_mask(flux)
-        differences = point_to_point_difference_ppt(flux, good_channels)
+        valid_channels = spectroscopic_time_series_validity_mask(flux)
+        science_quality_channels = spectroscopic_time_series_science_quality_mask(flux)
+        differences = point_to_point_difference_ppt(flux, valid_channels)
         if not differences.shape[0]:
             axis.text(
                 0.5,
@@ -344,10 +354,18 @@ def plot_point_to_point_difference(
         )
         axis.set(title=f"Order {order}", xlabel="Elapsed time [hours]", ylabel="Wavelength [µm]")
         axis.set_ylim(*window)
+        finite_count = int(np.count_nonzero(np.isfinite(differences)))
+        clipped_count = int(np.count_nonzero(np.abs(differences) > limit))
+        clipped_label = ""
+        if clipped_count:
+            clipped_label = f"\nDisplay-clipped finite pixels: {clipped_count}/{finite_count}"
         axis.text(
             0.99,
             0.97,
-            f"{retained_channel_label(good_channels)}\nIntegration pairs: {differences.shape[0]}",
+            (
+                f"{channel_classification_label(valid_channels, science_quality_channels)}\n"
+                f"Integration pairs: {differences.shape[0]}{clipped_label}"
+            ),
             transform=axis.transAxes,
             ha="right",
             va="top",

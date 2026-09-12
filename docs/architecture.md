@@ -67,11 +67,14 @@ therefore it has one fewer time row than the input.
 `white_light.png` uses four rows: the combined available orders, then separate fixed panels for Orders 1, 2,
 and 3. Each order keeps the same color in the combined and its individual panel.
 
-The shared `qa.common.SpectroscopicTimeSeriesConfig` holds the display-only SOSS spectroscopic-time-series
-guardrails: finite coverage, relative flux floor, robust scaling percentile, 1–50 ppt color-range bounds, and
-rejection of channels with pathological temporal residuals. Configured per-order wavelength windows determine the
-displayed spectral extent independently of these quality masks; rejected channels inside a window render neutral gray.
-These values are captured in QA provenance and do not alter FITS products.
+The shared `qa.common.SpectroscopicTimeSeriesConfig` holds the display-only SOSS
+spectroscopic-time-series guardrails: finite coverage, relative flux floor, robust scaling percentile, 1–50 ppt
+color-range bounds, and the pathological temporal-residual threshold. Its validity mask determines which channels
+have a finite, stable enough normalization to display; only invalid samples render neutral gray. The stricter
+pathological-variation criterion is preserved as a science-quality classification and annotated without hiding
+noisy but mathematically valid channels. Configured per-order wavelength windows determine the displayed spectral
+extent independently of either classification. These values are captured in QA provenance and do not alter FITS
+products.
 
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON

@@ -25,7 +25,7 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 
-QA_SCHEMA_VERSION = "8"
+QA_SCHEMA_VERSION = "9"
 PLOT_DPI = 180
 MAD_TO_SIGMA = 1.4826
 F_LAMBDA_UNIT = u.W / u.m**2 / u.um
@@ -35,13 +35,14 @@ F_LAMBDA_UNIT = u.W / u.m**2 / u.um
 class SpectroscopicTimeSeriesConfig:
     """Display-only guardrails for SOSS spectroscopic time series.
 
-    A wavelength channel is shown only when at least ``finite_fraction_min`` of
-    its integrations are finite and its absolute temporal-median flux exceeds
-    ``flux_floor_fraction`` of the order's characteristic median flux.  The
-    symmetric colour range is the requested percentile of good residuals,
-    bounded to prevent a handful of pathological samples from obscuring the
-    time-series structure. Channels with extreme own-time-series residuals are
-    neutralized before global scaling. These values intentionally affect QA
+    A channel is mathematically valid for display when at least
+    ``finite_fraction_min`` of its integrations are finite and its absolute
+    temporal-median flux exceeds ``flux_floor_fraction`` of the order's
+    characteristic median flux. The symmetric colour range is the requested
+    percentile of valid residuals, bounded to prevent a handful of extreme
+    samples from obscuring time-series structure. Channels with extreme
+    own-time-series residuals are separately classified as not science-quality
+    but remain visible for diagnostic QA. These values intentionally affect QA
     provenance.
     """
 
@@ -136,16 +137,17 @@ def relative_flux_ppt(flux: np.ndarray) -> np.ndarray:
     return result
 
 
-def spectroscopic_time_series_quality_mask(
+def spectroscopic_time_series_validity_mask(
     flux: np.ndarray,
     config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
 ) -> np.ndarray:
-    """Return per-channel validity for SOSS time-series QA quantities.
+    """Return per-channel mathematical validity for SOSS QA quantities.
 
     ``flux`` is shaped ``(integration, wavelength)`` with DQ-invalid samples
-    already represented as NaN. The mask is deliberately shared by every
-    wavelength-resolved QA diagnostic so a rejected channel stays neutral and
-    cannot influence a scale in only one figure.
+    already represented as NaN. Invalid channels lack adequate finite coverage
+    or a stable, finite temporal-median normalization denominator. This mask is
+    shared by every wavelength-resolved QA diagnostic, where invalid samples
+    render neutrally and do not influence display limits.
     """
     values = np.asarray(flux, dtype=float)
     if values.ndim != 2:
@@ -155,18 +157,32 @@ def spectroscopic_time_series_quality_mask(
     finite_median_flux = np.abs(median[np.isfinite(median)])
     characteristic = float(finite_median(finite_median_flux)) if finite_median_flux.size else np.nan
     floor = config.flux_floor_fraction * characteristic
-    good_channels = (
+    return (
         (finite_fraction >= config.finite_fraction_min)
         & np.isfinite(median)
-        & (np.abs(median) >= floor)
+        & (np.abs(median) > floor)
     )
+
+
+def spectroscopic_time_series_science_quality_mask(
+    flux: np.ndarray,
+    config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
+) -> np.ndarray:
+    """Classify channels that also pass the stricter variability criterion.
+
+    This classification preserves the former pathological-variation rejection,
+    but it is metadata for interpretation rather than a default display mask.
+    Noisy, mathematically valid channels therefore remain visible in QA.
+    """
+    values = np.asarray(flux, dtype=float)
+    valid_channels = spectroscopic_time_series_validity_mask(values, config)
     residual = relative_flux_ppt(values)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         channel_amplitude = np.nanpercentile(
             np.abs(residual), config.pathological_channel_percentile, axis=0
         )
-    return good_channels & (channel_amplitude <= config.pathological_channel_max_ppt)
+    return valid_channels & (channel_amplitude <= config.pathological_channel_max_ppt)
 
 
 def robust_ppt_limit(
@@ -182,25 +198,27 @@ def robust_ppt_limit(
 def spectroscopic_time_series_display(
     flux: np.ndarray,
     config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """Return display-ready ppt residuals, good channels, and clipped half-range.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Return residuals, validity/science masks, and clipped display half-range.
 
     ``flux`` must be shaped ``(integration, wavelength)`` and already have DQ
-    samples set to NaN. Bad wavelength channels are returned as NaN so plotting
-    can render them with the colormap's neutral bad value.
+    samples set to NaN. Only mathematically invalid wavelength channels are
+    returned as NaN so plotting can render them with the colormap's neutral bad
+    value. Science-quality failures intentionally remain visible.
     """
     values = np.asarray(flux, dtype=float)
     if values.ndim != 2:
         raise ValueError(f"Spectroscopic time-series flux must be 2-D, got {values.shape}")
-    good_channels = spectroscopic_time_series_quality_mask(values, config)
+    valid_channels = spectroscopic_time_series_validity_mask(values, config)
+    science_quality_channels = spectroscopic_time_series_science_quality_mask(values, config)
     residual = relative_flux_ppt(values)
-    residual[:, ~good_channels] = np.nan
-    return residual, good_channels, robust_ppt_limit(residual, config)
+    residual[:, ~valid_channels] = np.nan
+    return residual, valid_channels, science_quality_channels, robust_ppt_limit(residual, config)
 
 
 def relative_scatter_ppt(
     flux: np.ndarray,
-    good_channels: np.ndarray | None = None,
+    valid_channels: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return 1.4826 MAD temporal scatter divided by median flux, in ppt."""
     values = np.asarray(flux, dtype=float)
@@ -211,17 +229,17 @@ def relative_scatter_ppt(
     result = np.full(median.shape, np.nan, dtype=float)
     valid = np.isfinite(median) & (median != 0) & np.isfinite(mad)
     result[valid] = 1e3 * MAD_TO_SIGMA * mad[valid] / np.abs(median[valid])
-    if good_channels is not None:
-        good = np.asarray(good_channels, dtype=bool)
-        if good.shape != result.shape:
-            raise ValueError("Scatter quality mask must match the wavelength dimension.")
-        result[~good] = np.nan
+    if valid_channels is not None:
+        valid = np.asarray(valid_channels, dtype=bool)
+        if valid.shape != result.shape:
+            raise ValueError("Scatter validity mask must match the wavelength dimension.")
+        result[~valid] = np.nan
     return result
 
 
 def point_to_point_difference_ppt(
     flux: np.ndarray,
-    good_channels: np.ndarray | None = None,
+    valid_channels: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return later-minus-earlier consecutive-integration differences in ppt.
 
@@ -244,19 +262,31 @@ def point_to_point_difference_ppt(
         & (denominator != 0)
     )
     result[valid] = 1e3 * (values[1:][valid] - values[:-1][valid]) / denominator[valid]
-    if good_channels is not None:
-        good = np.asarray(good_channels, dtype=bool)
-        if good.shape != median.shape:
-            raise ValueError("Point-to-point quality mask must match the wavelength dimension.")
-        result[:, ~good] = np.nan
+    if valid_channels is not None:
+        valid_channels = np.asarray(valid_channels, dtype=bool)
+        if valid_channels.shape != median.shape:
+            raise ValueError("Point-to-point validity mask must match the wavelength dimension.")
+        result[:, ~valid_channels] = np.nan
     return result
 
 
-def retained_channel_label(good_channels: np.ndarray) -> str:
-    """Return a compact good-channel count within the configured window."""
-    good = np.asarray(good_channels, dtype=bool)
-    count = int(np.count_nonzero(good))
-    return f"Good channels in window: {count}/{good.size} ({count / good.size:.0%})"
+def channel_classification_label(
+    valid_channels: np.ndarray, science_quality_channels: np.ndarray
+) -> str:
+    """Return validity and stricter science-quality counts in one annotation."""
+    valid = np.asarray(valid_channels, dtype=bool)
+    science_quality = np.asarray(science_quality_channels, dtype=bool)
+    if valid.shape != science_quality.shape:
+        raise ValueError("Validity and science-quality masks must have matching wavelength dimensions.")
+    science_quality = science_quality & valid
+    valid_count = int(np.count_nonzero(valid))
+    science_quality_count = int(np.count_nonzero(science_quality))
+    total = valid.size
+    fraction = science_quality_count / total if total else 0.0
+    return (
+        f"Valid channels shown: {valid_count}/{total}\n"
+        f"Science-quality channels: {science_quality_count}/{total} ({fraction:.0%})"
+    )
 
 
 def flux_to_f_lambda(

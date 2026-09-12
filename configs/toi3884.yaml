@@ -46,7 +46,7 @@ qa:
   # Derived inspection products; failures do not invalidate calibration outputs.
   enabled: true
   soss:
-    # Spectroscopic-time-series display windows in microns; bad channels remain gray within them.
+    # Spectroscopic-time-series display windows in microns; invalid channels remain gray within them.
     wavelength_windows:
       1: [0.85, 2.83]
       2: [0.60, 1.00]

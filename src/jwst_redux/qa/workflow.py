@@ -17,6 +17,17 @@ from . import stage2 as stage2_qa
 from . import stage3 as stage3_qa
 from .common import SPECTROSCOPIC_TIME_SERIES_CONFIG, qa_subdirectory
 
+SOSS_CHANNEL_CLASSIFICATION: dict[str, str] = {
+    "validity": (
+        "finite temporal coverage and finite, stable temporal-median normalization; "
+        "invalid samples render neutrally"
+    ),
+    "science_quality": (
+        "valid channels whose 99th-percentile temporal residual is at most 250 ppt; "
+        "classification only, not the default display mask"
+    ),
+}
+
 QA_PARAMETER_BASE: dict[str, Any] = {
     "stage1": {"image_limits": "finite 1st/99th percentiles", "scatter": "1.4826 * MAD"},
     "stage2": {
@@ -26,6 +37,7 @@ QA_PARAMETER_BASE: dict[str, Any] = {
             "quantity": "ppt relative to temporal median",
             **SPECTROSCOPIC_TIME_SERIES_CONFIG.as_provenance(),
         },
+        "soss_channel_classification": SOSS_CHANNEL_CLASSIFICATION,
         "scatter_spectrum": {
             "quantity": "ppt relative temporal scatter",
             "estimator": "1.4826 * MAD_t(flux) / abs(median_t(flux))",
@@ -44,6 +56,7 @@ QA_PARAMETER_BASE: dict[str, Any] = {
             "quantity": "ppt relative to temporal median",
             **SPECTROSCOPIC_TIME_SERIES_CONFIG.as_provenance(),
         },
+        "soss_channel_classification": SOSS_CHANNEL_CLASSIFICATION,
         "scatter_spectrum": {
             "quantity": "ppt relative temporal scatter",
             "estimator": "1.4826 * MAD_t(flux) / abs(median_t(flux))",

@@ -20,14 +20,17 @@ from jwst_redux.qa import soss
 from jwst_redux.qa.common import (
     QA_SCHEMA_VERSION,
     SPECTROSCOPIC_TIME_SERIES_CONFIG,
+    Spectrum,
+    channel_classification_label,
     flux_to_f_lambda,
     point_to_point_difference_ppt,
     relative_flux_ppt,
     relative_scatter_ppt,
-    retained_channel_label,
     robust_ppt_limit,
     spectra_from_x1dints,
     spectroscopic_time_series_display,
+    spectroscopic_time_series_science_quality_mask,
+    spectroscopic_time_series_validity_mask,
 )
 from jwst_redux.qa.soss import (
     POINT_TO_POINT_COLORBAR_LABEL,
@@ -228,16 +231,19 @@ def test_f_lambda_conversion_and_spectroscopic_time_series_guardrails() -> None:
             [9.99, 0.1, 9.0, np.nan, 10.0],
         ]
     )
-    residual, good, limit = spectroscopic_time_series_display(flux)
-    assert good.tolist() == [True, False, True, False, False]
+    residual, valid, science_quality, limit = spectroscopic_time_series_display(flux)
+    assert valid.tolist() == [True, False, True, False, True]
+    assert science_quality.tolist() == [True, False, True, False, False]
     assert np.isnan(residual[:, 1]).all()
     assert np.isnan(residual[:, 3]).all()
-    assert np.isnan(residual[:, 4]).all()
+    assert np.isfinite(residual[:, 4]).all()
     assert limit == SPECTROSCOPIC_TIME_SERIES_CONFIG.scale_max_ppt
-    assert retained_channel_label(good) == "Good channels in window: 2/5 (40%)"
+    assert channel_classification_label(valid, science_quality) == (
+        "Valid channels shown: 3/5\nScience-quality channels: 2/5 (40%)"
+    )
 
     small = np.array([[10.0], [10.001], [9.999]])
-    _, _, small_limit = spectroscopic_time_series_display(small)
+    _, _, _, small_limit = spectroscopic_time_series_display(small)
     assert small_limit == SPECTROSCOPIC_TIME_SERIES_CONFIG.scale_min_ppt
     assert SPECTROSCOPIC_TIME_SERIES_COLORBAR_LABEL == "Relative flux [ppt]"
     assert np.allclose(spectroscopic_time_series_colormap().get_bad()[:3], [0.82, 0.82, 0.82])
@@ -252,22 +258,25 @@ def test_spectroscopic_time_series_window_is_independent_of_quality_mask() -> No
     selected_wavelength, selected_flux = select_spectroscopic_time_series_window(
         wavelength, flux, window
     )
-    _, good, _ = spectroscopic_time_series_display(selected_flux)
+    _, valid, science_quality, _ = spectroscopic_time_series_display(selected_flux)
 
     assert window == (0.70, 0.95)
     assert selected_wavelength.tolist() == [0.7, 0.8, 0.9]
-    assert good.tolist() == [True, False, True]
-    assert retained_channel_label(good) == "Good channels in window: 2/3 (67%)"
+    assert valid.tolist() == [True, False, True]
+    assert science_quality.tolist() == [True, False, True]
+    assert channel_classification_label(valid, science_quality) == (
+        "Valid channels shown: 2/3\nScience-quality channels: 2/3 (67%)"
+    )
 
 
-def test_scatter_and_point_to_point_quantities_mask_bad_channels_and_use_ppt() -> None:
+def test_scatter_and_point_to_point_quantities_mask_invalid_channels_and_use_ppt() -> None:
     flux = np.array(
         [[10.0, 10.0, np.nan], [12.0, 8.0, np.nan], [14.0, 10.0, np.nan]]
     )
-    good = np.array([True, True, False])
+    valid = np.array([True, True, False])
 
-    scatter = relative_scatter_ppt(flux, good)
-    differences = point_to_point_difference_ppt(flux, good)
+    scatter = relative_scatter_ppt(flux, valid)
+    differences = point_to_point_difference_ppt(flux, valid)
 
     assert np.allclose(scatter[:2], [1e3 * 1.4826 * 2 / 12, 0])
     assert np.isnan(scatter[2])
@@ -276,6 +285,66 @@ def test_scatter_and_point_to_point_quantities_mask_bad_channels_and_use_ppt() -
     assert np.isnan(differences[:, 2]).all()
     assert robust_ppt_limit(np.array([[1_000.0, -1_000.0]])) == 50.0
     assert POINT_TO_POINT_COLORBAR_LABEL == "Point-to-point relative difference [ppt]"
+
+
+def test_soss_diagnostics_show_valid_but_science_quality_rejected_channels(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """High-scatter channels are diagnostic data, while invalid ones remain neutral."""
+    wavelength = np.array([0.86, 0.90, 0.94])
+    flux = np.array(
+        [
+            [10.0, 10.0, np.nan],
+            [10.0, 20.0, np.nan],
+            [10.0, 30.0, np.nan],
+            [10.0, 10.0, np.nan],
+            [10.0, 20.0, np.nan],
+        ]
+    )
+    valid = spectroscopic_time_series_validity_mask(flux)
+    science_quality = spectroscopic_time_series_science_quality_mask(flux)
+    assert valid.tolist() == [True, True, False]
+    assert science_quality.tolist() == [True, False, False]
+
+    residual, displayed_valid, displayed_science_quality, limit = spectroscopic_time_series_display(
+        flux
+    )
+    scatter = relative_scatter_ppt(flux, valid)
+    differences = point_to_point_difference_ppt(flux, valid)
+    assert displayed_valid.tolist() == valid.tolist()
+    assert displayed_science_quality.tolist() == science_quality.tolist()
+    assert np.isfinite(residual[:, 1]).all() and np.isnan(residual[:, 2]).all()
+    assert scatter[1] > 250 and np.isnan(scatter[2])
+    assert np.isfinite(differences[:, 1]).all() and np.isnan(differences[:, 2]).all()
+    assert limit == SPECTROSCOPIC_TIME_SERIES_CONFIG.scale_max_ppt
+
+    spectra = [
+        Spectrum(1, index, 60000.0 + index / 1000, wavelength, row, None)
+        for index, row in enumerate(flux, start=1)
+    ]
+    figures = []
+
+    def capture(figure, output: Path) -> Path:
+        figures.append(figure)
+        return output
+
+    monkeypatch.setattr(soss, "save_figure", capture)
+    groups = {1: spectra}
+    windows = {1: (0.85, 0.95)}
+    soss.plot_scatter_spectrum(groups, "test", tmp_path / "scatter_spectrum.png", windows)
+    soss.plot_point_to_point_difference(
+        groups, "test", tmp_path / "point_to_point_difference.png", windows
+    )
+    soss.plot_spectroscopic_time_series(
+        groups, "test", tmp_path / "spectroscopic_time_series.png", windows
+    )
+
+    scatter_values = figures[0].axes[0].lines[0].get_ydata()
+    point_to_point_values = figures[1].axes[0].collections[0].get_array().filled(np.nan)
+    time_series_values = figures[2].axes[0].collections[0].get_array().filled(np.nan)
+    assert scatter_values[1] > 250 and np.isnan(scatter_values[2])
+    assert np.any(np.abs(point_to_point_values) > 250) and np.isnan(point_to_point_values).any()
+    assert np.any(np.abs(time_series_values) > 250) and np.isnan(time_series_values).any()
 
 
 def test_spectra_plot_legend_labels_individual_integrations_and_median(
@@ -355,6 +424,10 @@ def test_soss_qa_regenerates_new_outputs_from_local_pipeline_products_only(tmp_p
     assert manifest.entry("stage2-local")["status"] == "success"
     assert manifest.entry("stage3-local") is not None
     assert manifest.entry("stage3-local")["status"] == "success"
+    classification = results[0].manifest_entry["plotting_parameters"][
+        "soss_channel_classification"
+    ]
+    assert "not the default display mask" in classification["science_quality"]
 
 
 def test_qa_provenance_failure_and_stale_rebuild_do_not_change_pipeline_status(

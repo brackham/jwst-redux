@@ -64,6 +64,9 @@ For SOSS extracted products, Stage 2 and Stage 3 QA includes spectra, white-ligh
 spectroscopic-time-series, wavelength-dependent robust-scatter, and point-to-point-difference diagnostics.
 The white-light diagnostic has a combined-order panel followed by fixed, color-consistent panels for
 Orders 1, 2, and 3.
+Within each configured wavelength window, SOSS QA displays all mathematically valid channels; the
+stricter pathological-variation criterion is recorded as a science-quality classification rather than
+used to hide noisy diagnostic data.
 
 The remaining workflow commands are scaffolded:
 
