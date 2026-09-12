@@ -60,6 +60,10 @@ Successful stages automatically create derived inspection QA (unless `qa.enabled
 official calibration: plotting failure is recorded separately and never invalidates or reruns Detector1, Spec2, or
 TSO3 products. The `qa` command rebuilds missing or stale figures from existing successful manifest products only;
 it does not query MAST, download data, access CRDS, or execute calibration.
+For SOSS extracted products, Stage 2 and Stage 3 QA includes spectra, white-light,
+spectroscopic-time-series, wavelength-dependent robust-scatter, and point-to-point-difference diagnostics.
+The white-light diagnostic has a combined-order panel followed by fixed, color-consistent panels for
+Orders 1, 2, and 3.
 
 The remaining workflow commands are scaffolded:
 

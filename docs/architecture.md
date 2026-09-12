@@ -59,9 +59,19 @@ This layer reads successful official products but is not itself a JWST pipeline 
 normalization choices, outputs, upstream run IDs, and status are independent manifest entries. QA can be rebuilt
 without changing pipeline provenance or causing calibration to rerun.
 
-The shared `qa.common.DynamicSpectrumConfig` holds the display-only SOSS dynamic-spectrum guardrails: finite
-coverage, relative flux floor, robust scaling percentile, 1–50 ppt color-range bounds, and rejection of channels
-with pathological temporal residuals. These values are captured in QA provenance and do not alter FITS products.
+For SOSS Stage 2 and Stage 3 extracted spectra, QA includes `spectra.png`, `white_light.png`,
+`spectroscopic_time_series.png`, `scatter_spectrum.png`, and `point_to_point_difference.png`. The scatter
+diagnostic is the per-channel `1.4826 * MAD_t(flux) / abs(median_t(flux))` in ppt. Point-to-point rows are
+later-minus-earlier consecutive integrations, normalized by the temporal median and plotted at the later timestamp;
+therefore it has one fewer time row than the input.
+`white_light.png` uses four rows: the combined available orders, then separate fixed panels for Orders 1, 2,
+and 3. Each order keeps the same color in the combined and its individual panel.
+
+The shared `qa.common.SpectroscopicTimeSeriesConfig` holds the display-only SOSS spectroscopic-time-series
+guardrails: finite coverage, relative flux floor, robust scaling percentile, 1–50 ppt color-range bounds, and
+rejection of channels with pathological temporal residuals. Configured per-order wavelength windows determine the
+displayed spectral extent independently of these quality masks; rejected channels inside a window render neutral gray.
+These values are captured in QA provenance and do not alter FITS products.
 
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON

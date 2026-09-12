@@ -937,7 +937,7 @@ def _resume_identity(
 
 def _workspace(config: WriteConfig) -> Workspace:
     """Resolve the write workspace isolated by the complete selected exposure."""
-    return Workspace.for_selection(config.discovery.output_root.resolve(), config.selection)
+    return Workspace.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:

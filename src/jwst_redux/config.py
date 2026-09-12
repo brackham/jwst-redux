@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .exceptions import ConfigurationError
+
+DEFAULT_SOSS_WAVELENGTH_WINDOWS: dict[int, tuple[float, float]] = {
+    1: (0.85, 2.83),
+    2: (0.60, 1.00),
+    3: (0.70, 0.95),
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,9 @@ class WriteConfig:
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
     qa_enabled: bool = False
+    soss_wavelength_windows: dict[int, tuple[float, float]] = field(
+        default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+    )
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -147,6 +157,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
     qa_enabled = qa.get("enabled", True)
     if not isinstance(qa_enabled, bool):
         raise ConfigurationError("Configuration field 'qa.enabled' must be boolean.")
+    soss_wavelength_windows = _soss_wavelength_windows(qa)
 
     overrides = pipeline.get("overrides", {})
     if not isinstance(overrides, dict):
@@ -188,6 +199,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         tso3_parameter_overrides=dict(tso3_overrides),
         overwrite=overwrite,
         qa_enabled=qa_enabled,
+        soss_wavelength_windows=soss_wavelength_windows,
     )
 
 
@@ -228,6 +240,38 @@ def _exposure_number_from_id(exposure_id: str) -> str | None:
     if len(parts) < 2 or len(parts[1]) != 5 or not parts[1].isdigit():
         return None
     return parts[1]
+
+
+def _soss_wavelength_windows(qa: dict[str, Any]) -> dict[int, tuple[float, float]]:
+    """Validate optional display windows for NIRISS/SOSS spectroscopic time series."""
+    soss = qa.get("soss", {})
+    if not isinstance(soss, dict):
+        raise ConfigurationError("Configuration field 'qa.soss' must be a mapping.")
+    configured = soss.get("wavelength_windows", {})
+    if not isinstance(configured, dict):
+        raise ConfigurationError("Configuration field 'qa.soss.wavelength_windows' must be a mapping.")
+    windows = dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+    for order_key, bounds in configured.items():
+        try:
+            order = int(order_key)
+        except (TypeError, ValueError) as error:
+            raise ConfigurationError(
+                "SOSS wavelength-window order keys must be positive integers."
+            ) from error
+        if order <= 0 or not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ConfigurationError(
+                "Each SOSS wavelength window must be a two-value [minimum, maximum] list."
+            )
+        try:
+            lower, upper = (float(value) for value in bounds)
+        except (TypeError, ValueError) as error:
+            raise ConfigurationError("SOSS wavelength-window bounds must be numeric.") from error
+        if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+            raise ConfigurationError(
+                "SOSS wavelength-window bounds must be finite and strictly increasing."
+            )
+        windows[order] = (lower, upper)
+    return windows
 
 
 def _archive_target_names(query: dict[str, Any]) -> tuple[str, ...]:

@@ -15,24 +15,44 @@ from . import QA_SCHEMA_VERSION
 from . import stage1 as stage1_qa
 from . import stage2 as stage2_qa
 from . import stage3 as stage3_qa
-from .common import DYNAMIC_SPECTRUM_CONFIG, qa_subdirectory
+from .common import SPECTROSCOPIC_TIME_SERIES_CONFIG, qa_subdirectory
 
-QA_PARAMETERS: dict[str, Any] = {
+QA_PARAMETER_BASE: dict[str, Any] = {
     "stage1": {"image_limits": "finite 1st/99th percentiles", "scatter": "1.4826 * MAD"},
     "stage2": {
         "white_light": "sum finite DQ=0 extracted samples",
         "spectra": "native spectral density converted to F_lambda [W m^-2 um^-1] for display",
-        "dynamic": {
+        "spectroscopic_time_series": {
             "quantity": "ppt relative to temporal median",
-            **DYNAMIC_SPECTRUM_CONFIG.as_provenance(),
+            **SPECTROSCOPIC_TIME_SERIES_CONFIG.as_provenance(),
+        },
+        "scatter_spectrum": {
+            "quantity": "ppt relative temporal scatter",
+            "estimator": "1.4826 * MAD_t(flux) / abs(median_t(flux))",
+        },
+        "point_to_point_difference": {
+            "quantity": "ppt relative consecutive-integration difference",
+            "formula": "1000 * (F(t_i) - F(t_i-1)) / median_t(F)",
+            "time_coordinate": "timestamp of later integration t_i",
+            "rows": "one fewer than the input integration count",
         },
     },
     "stage3": {
         "white_light": "official TSO3 whtlt.ecsv",
         "spectra": "native spectral density converted to F_lambda [W m^-2 um^-1] for display",
-        "dynamic": {
+        "spectroscopic_time_series": {
             "quantity": "ppt relative to temporal median",
-            **DYNAMIC_SPECTRUM_CONFIG.as_provenance(),
+            **SPECTROSCOPIC_TIME_SERIES_CONFIG.as_provenance(),
+        },
+        "scatter_spectrum": {
+            "quantity": "ppt relative temporal scatter",
+            "estimator": "1.4826 * MAD_t(flux) / abs(median_t(flux))",
+        },
+        "point_to_point_difference": {
+            "quantity": "ppt relative consecutive-integration difference",
+            "formula": "1000 * (F(t_i) - F(t_i-1)) / median_t(F)",
+            "time_coordinate": "timestamp of later integration t_i",
+            "rows": "one fewer than the input integration count",
         },
     },
 }
@@ -62,7 +82,7 @@ def generate_qa(
     unknown = set(stages).difference({"stage1", "stage2", "stage3"})
     if unknown:
         raise JWSTReduxError(f"Unsupported QA stage(s): {', '.join(sorted(unknown))}")
-    workspace = Workspace.for_selection(config.discovery.output_root.resolve(), config.selection)
+    workspace = Workspace.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
     if not workspace.manifest.is_file():
         raise JWSTReduxError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
@@ -70,11 +90,13 @@ def generate_qa(
     results: list[QAResult] = []
     for stage in stages:
         for pipeline_entry, inputs in _pipeline_products(manifest, config, stage):
+            plotting_parameters = _qa_parameters(config, stage)
             results.append(
                 _generate_one(
                     manifest,
                     workspace,
                     _selection_record(config),
+                    plotting_parameters,
                     stage,
                     pipeline_entry,
                     inputs,
@@ -144,6 +166,7 @@ def _generate_one(
     manifest: ManifestStore,
     workspace: Workspace,
     selection: dict[str, str],
+    plotting_parameters: dict[str, Any],
     stage: str,
     pipeline_entry: dict[str, Any],
     inputs: tuple[Path, ...],
@@ -159,7 +182,7 @@ def _generate_one(
             "qa_schema_version": QA_SCHEMA_VERSION,
             "inputs": input_records,
             "upstream_run_ids": [pipeline_entry["run_id"]],
-            "plotting_parameters": QA_PARAMETERS[stage],
+            "plotting_parameters": plotting_parameters,
         }
     )
     run_id = str(uuid.uuid4())
@@ -175,7 +198,7 @@ def _generate_one(
         "qa_schema_version": QA_SCHEMA_VERSION,
         "input_pipeline_products": input_records,
         "upstream_successful_run_ids": [pipeline_entry["run_id"]],
-        "plotting_parameters": QA_PARAMETERS[stage],
+        "plotting_parameters": plotting_parameters,
         "output_directory": str(output_dir),
     }
     manifest.append(entry)
@@ -200,7 +223,7 @@ def _generate_one(
             manifest.entry(run_id) or entry,
         )
     try:
-        outputs = _plot(stage, inputs, output_dir)
+        outputs = _plot(stage, inputs, output_dir, plotting_parameters)
         records = [_file_record(path) for path in outputs]
         manifest.update(run_id, {"status": "success", "end_time": utc_now(), "outputs": records})
         _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
@@ -227,16 +250,44 @@ def _generate_one(
         )
 
 
-def _plot(stage: str, inputs: tuple[Path, ...], output_dir: Path) -> tuple[Path, ...]:
+def _plot(
+    stage: str,
+    inputs: tuple[Path, ...],
+    output_dir: Path,
+    plotting_parameters: dict[str, Any],
+) -> tuple[Path, ...]:
     if stage == "stage1":
         return stage1_qa.generate(inputs[0], output_dir)
     if stage == "stage2":
-        return stage2_qa.generate(inputs[0], output_dir)
-    return stage3_qa.generate(inputs[0], inputs[1], output_dir)
+        return stage2_qa.generate(
+            inputs[0], output_dir, _wavelength_windows(plotting_parameters)
+        )
+    return stage3_qa.generate(
+        inputs[0], inputs[1], output_dir, _wavelength_windows(plotting_parameters)
+    )
 
 
 def _file_record(path: Path) -> dict[str, Any]:
     return {"path": str(path), "size_bytes": path.stat().st_size}
+
+
+def _qa_parameters(config: WriteConfig, stage: str) -> dict[str, Any]:
+    """Return stage QA provenance including configured SOSS display windows."""
+    parameters = dict(QA_PARAMETER_BASE[stage])
+    if stage in {"stage2", "stage3"}:
+        time_series = dict(parameters["spectroscopic_time_series"])
+        time_series["wavelength_windows_microns"] = {
+            str(order): list(window)
+            for order, window in sorted(config.soss_wavelength_windows.items())
+        }
+        parameters["spectroscopic_time_series"] = time_series
+    return parameters
+
+
+def _wavelength_windows(plotting_parameters: dict[str, Any]) -> dict[int, tuple[float, float]]:
+    """Recover validated display windows from the recorded plotting parameters."""
+    configured = plotting_parameters["spectroscopic_time_series"]["wavelength_windows_microns"]
+    return {int(order): (float(bounds[0]), float(bounds[1])) for order, bounds in configured.items()}
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:

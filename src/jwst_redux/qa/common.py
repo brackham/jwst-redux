@@ -25,15 +25,15 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 
-QA_SCHEMA_VERSION = "6"
+QA_SCHEMA_VERSION = "8"
 PLOT_DPI = 180
 MAD_TO_SIGMA = 1.4826
 F_LAMBDA_UNIT = u.W / u.m**2 / u.um
 
 
 @dataclass(frozen=True)
-class DynamicSpectrumConfig:
-    """Display-only guardrails for SOSS relative-flux maps.
+class SpectroscopicTimeSeriesConfig:
+    """Display-only guardrails for SOSS spectroscopic time series.
 
     A wavelength channel is shown only when at least ``finite_fraction_min`` of
     its integrations are finite and its absolute temporal-median flux exceeds
@@ -66,7 +66,7 @@ class DynamicSpectrumConfig:
         }
 
 
-DYNAMIC_SPECTRUM_CONFIG = DynamicSpectrumConfig()
+SPECTROSCOPIC_TIME_SERIES_CONFIG = SpectroscopicTimeSeriesConfig()
 
 
 @dataclass(frozen=True)
@@ -136,18 +136,20 @@ def relative_flux_ppt(flux: np.ndarray) -> np.ndarray:
     return result
 
 
-def dynamic_spectrum_display(
-    flux: np.ndarray, config: DynamicSpectrumConfig = DYNAMIC_SPECTRUM_CONFIG
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """Return display-ready ppt residuals, good channels, and clipped half-range.
+def spectroscopic_time_series_quality_mask(
+    flux: np.ndarray,
+    config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
+) -> np.ndarray:
+    """Return per-channel validity for SOSS time-series QA quantities.
 
-    ``flux`` must be shaped ``(integration, wavelength)`` and already have DQ
-    samples set to NaN. Bad wavelength channels are returned as NaN so plotting
-    can render them with the colormap's neutral bad value.
+    ``flux`` is shaped ``(integration, wavelength)`` with DQ-invalid samples
+    already represented as NaN. The mask is deliberately shared by every
+    wavelength-resolved QA diagnostic so a rejected channel stays neutral and
+    cannot influence a scale in only one figure.
     """
     values = np.asarray(flux, dtype=float)
     if values.ndim != 2:
-        raise ValueError(f"Dynamic spectrum flux must be 2-D, got {values.shape}")
+        raise ValueError(f"Spectroscopic time-series flux must be 2-D, got {values.shape}")
     finite_fraction = np.mean(np.isfinite(values), axis=0)
     median = np.asarray(finite_median(values, axis=0), dtype=float)
     finite_median_flux = np.abs(median[np.isfinite(median)])
@@ -164,41 +166,97 @@ def dynamic_spectrum_display(
         channel_amplitude = np.nanpercentile(
             np.abs(residual), config.pathological_channel_percentile, axis=0
         )
-    good_channels &= channel_amplitude <= config.pathological_channel_max_ppt
-    residual[:, ~good_channels] = np.nan
-    finite = np.abs(residual[np.isfinite(residual)])
+    return good_channels & (channel_amplitude <= config.pathological_channel_max_ppt)
+
+
+def robust_ppt_limit(
+    values: np.ndarray,
+    config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
+) -> float:
+    """Return a symmetric, bounded colour range from finite ppt samples."""
+    finite = np.abs(np.asarray(values, dtype=float)[np.isfinite(values)])
     raw_limit = float(np.percentile(finite, config.scale_percentile)) if finite.size else 0.0
-    limit = float(np.clip(raw_limit, config.scale_min_ppt, config.scale_max_ppt))
-    return residual, good_channels, limit
+    return float(np.clip(raw_limit, config.scale_min_ppt, config.scale_max_ppt))
 
 
-def retained_wavelength_extent(
-    wavelength_microns: np.ndarray, good_channels: np.ndarray
-) -> tuple[float, float] | None:
-    """Return the wavelength span of the dominant contiguous retained run.
+def spectroscopic_time_series_display(
+    flux: np.ndarray,
+    config: SpectroscopicTimeSeriesConfig = SPECTROSCOPIC_TIME_SERIES_CONFIG,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return display-ready ppt residuals, good channels, and clipped half-range.
 
-    A few isolated retained channels can occur far outside the useful spectral
-    region. They do not define the displayed viewport; the longest contiguous
-    run does. This changes no validity flag and only crops the presentation.
+    ``flux`` must be shaped ``(integration, wavelength)`` and already have DQ
+    samples set to NaN. Bad wavelength channels are returned as NaN so plotting
+    can render them with the colormap's neutral bad value.
     """
-    wavelength = np.asarray(wavelength_microns, dtype=float)
-    good = np.asarray(good_channels, dtype=bool)
-    if wavelength.shape != good.shape:
-        raise ValueError("Wavelength and good-channel arrays must have identical shapes.")
-    indices = np.flatnonzero(good & np.isfinite(wavelength))
-    if not indices.size:
-        return None
-    runs = np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
-    dominant = max(runs, key=len)
-    retained = wavelength[dominant]
-    return (float(np.min(retained)), float(np.max(retained)))
+    values = np.asarray(flux, dtype=float)
+    if values.ndim != 2:
+        raise ValueError(f"Spectroscopic time-series flux must be 2-D, got {values.shape}")
+    good_channels = spectroscopic_time_series_quality_mask(values, config)
+    residual = relative_flux_ppt(values)
+    residual[:, ~good_channels] = np.nan
+    return residual, good_channels, robust_ppt_limit(residual, config)
+
+
+def relative_scatter_ppt(
+    flux: np.ndarray,
+    good_channels: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return 1.4826 MAD temporal scatter divided by median flux, in ppt."""
+    values = np.asarray(flux, dtype=float)
+    if values.ndim != 2:
+        raise ValueError(f"Scatter flux must be 2-D, got {values.shape}")
+    median = np.asarray(finite_median(values, axis=0), dtype=float)
+    mad = np.asarray(finite_median(np.abs(values - median[None, :]), axis=0), dtype=float)
+    result = np.full(median.shape, np.nan, dtype=float)
+    valid = np.isfinite(median) & (median != 0) & np.isfinite(mad)
+    result[valid] = 1e3 * MAD_TO_SIGMA * mad[valid] / np.abs(median[valid])
+    if good_channels is not None:
+        good = np.asarray(good_channels, dtype=bool)
+        if good.shape != result.shape:
+            raise ValueError("Scatter quality mask must match the wavelength dimension.")
+        result[~good] = np.nan
+    return result
+
+
+def point_to_point_difference_ppt(
+    flux: np.ndarray,
+    good_channels: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return later-minus-earlier consecutive-integration differences in ppt.
+
+    Row ``i`` is the difference between integrations ``i + 1`` and ``i`` and
+    is plotted at the timestamp of the later integration. Consequently the
+    output has one fewer time row than the input.
+    """
+    values = np.asarray(flux, dtype=float)
+    if values.ndim != 2:
+        raise ValueError(f"Point-to-point flux must be 2-D, got {values.shape}")
+    median = np.asarray(finite_median(values, axis=0), dtype=float)
+    result = np.full((max(values.shape[0] - 1, 0), values.shape[1]), np.nan, dtype=float)
+    if values.shape[0] < 2:
+        return result
+    denominator = np.broadcast_to(median, result.shape)
+    valid = (
+        np.isfinite(values[1:])
+        & np.isfinite(values[:-1])
+        & np.isfinite(denominator)
+        & (denominator != 0)
+    )
+    result[valid] = 1e3 * (values[1:][valid] - values[:-1][valid]) / denominator[valid]
+    if good_channels is not None:
+        good = np.asarray(good_channels, dtype=bool)
+        if good.shape != median.shape:
+            raise ValueError("Point-to-point quality mask must match the wavelength dimension.")
+        result[:, ~good] = np.nan
+    return result
 
 
 def retained_channel_label(good_channels: np.ndarray) -> str:
-    """Return a compact retained-channel count annotation."""
+    """Return a compact good-channel count within the configured window."""
     good = np.asarray(good_channels, dtype=bool)
     count = int(np.count_nonzero(good))
-    return f"Retained: {count}/{good.size} ({count / good.size:.0%})"
+    return f"Good channels in window: {count}/{good.size} ({count / good.size:.0%})"
 
 
 def flux_to_f_lambda(

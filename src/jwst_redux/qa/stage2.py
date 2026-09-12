@@ -5,14 +5,41 @@ from __future__ import annotations
 from pathlib import Path
 
 from .common import spectra_from_x1dints
-from .soss import dynamic_spectrum_plot, soss_title, spectra_plot, white_light_proxy_plot
+from .soss import (
+    plot_point_to_point_difference,
+    plot_scatter_spectrum,
+    plot_spectroscopic_time_series,
+    soss_title,
+    spectra_plot,
+    white_light_proxy_plot,
+)
 
 
-def generate(path: Path, output_dir: Path) -> tuple[Path, ...]:
+def generate(
+    path: Path, output_dir: Path, wavelength_windows: dict[int, tuple[float, float]]
+) -> tuple[Path, ...]:
     groups, header, flux_unit, _ = spectra_from_x1dints(path)
     title = soss_title(header, "Stage 2")
-    return (
-        spectra_plot(groups, title, flux_unit, output_dir / "spectra.png"),
+    outputs = (
+        spectra_plot(groups, title, flux_unit, output_dir / "spectra.png", wavelength_windows),
         white_light_proxy_plot(groups, title, output_dir / "white_light.png"),
-        dynamic_spectrum_plot(groups, title, output_dir / "dynamic_spectrum.png"),
+        plot_spectroscopic_time_series(
+            groups,
+            title,
+            output_dir / "spectroscopic_time_series.png",
+            wavelength_windows,
+        ),
+        plot_scatter_spectrum(
+            groups,
+            title,
+            output_dir / "scatter_spectrum.png",
+            wavelength_windows,
+        ),
+        plot_point_to_point_difference(
+            groups,
+            title,
+            output_dir / "point_to_point_difference.png",
+            wavelength_windows,
+        ),
     )
+    return outputs

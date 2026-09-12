@@ -8,20 +8,37 @@ from astropy.table import Table
 from typer.testing import CliRunner
 
 from jwst_redux import cli
-from jwst_redux.config import DiscoveryConfig, ExposureSelectionConfig, QueryConfig, WriteConfig
-from jwst_redux.provenance import ManifestStore
-from jwst_redux.qa.common import (
-    DYNAMIC_SPECTRUM_CONFIG,
-    QA_SCHEMA_VERSION,
-    dynamic_spectrum_display,
-    flux_to_f_lambda,
-    relative_flux_ppt,
-    retained_channel_label,
-    retained_wavelength_extent,
-    spectra_from_x1dints,
+from jwst_redux.config import (
+    DEFAULT_SOSS_WAVELENGTH_WINDOWS,
+    DiscoveryConfig,
+    ExposureSelectionConfig,
+    QueryConfig,
+    WriteConfig,
 )
-from jwst_redux.qa.soss import DYNAMIC_COLORBAR_LABEL, dynamic_colormap
+from jwst_redux.provenance import ManifestStore
+from jwst_redux.qa import soss
+from jwst_redux.qa.common import (
+    QA_SCHEMA_VERSION,
+    SPECTROSCOPIC_TIME_SERIES_CONFIG,
+    flux_to_f_lambda,
+    point_to_point_difference_ppt,
+    relative_flux_ppt,
+    relative_scatter_ppt,
+    retained_channel_label,
+    robust_ppt_limit,
+    spectra_from_x1dints,
+    spectroscopic_time_series_display,
+)
+from jwst_redux.qa.soss import (
+    POINT_TO_POINT_COLORBAR_LABEL,
+    SPECTROSCOPIC_TIME_SERIES_COLORBAR_LABEL,
+    select_spectroscopic_time_series_window,
+    spectroscopic_time_series_colormap,
+    spectroscopic_time_series_window,
+)
 from jwst_redux.qa.stage1 import generate as generate_stage1
+from jwst_redux.qa.stage2 import generate as generate_stage2
+from jwst_redux.qa.stage3 import generate as generate_stage3
 from jwst_redux.qa.stage3 import official_white_light
 from jwst_redux.qa.workflow import QAResult, generate_qa
 from jwst_redux.workspace import Workspace
@@ -110,7 +127,53 @@ def test_soss_parser_combines_all_segmented_extract_rows(tmp_path: Path) -> None
     assert [item.integration for item in groups[1]] == [1, 2, 3, 4, 5, 6]
 
 
-def test_white_light_columns_and_dynamic_normalization_are_discovered(tmp_path: Path) -> None:
+def test_soss_qa_uses_spectroscopic_time_series_product_name(tmp_path: Path) -> None:
+    path = tmp_path / "x1dints.fits"
+    output = tmp_path / "qa"
+    output.mkdir()
+    _x1dints(path)
+
+    generated = generate_stage2(path, output, DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+
+    assert {item.name for item in generated} == {
+        "spectra.png",
+        "white_light.png",
+        "spectroscopic_time_series.png",
+        "scatter_spectrum.png",
+        "point_to_point_difference.png",
+    }
+    assert all(item.stat().st_size > 0 for item in generated)
+
+
+def test_stage3_soss_qa_creates_scatter_and_point_to_point_products(tmp_path: Path) -> None:
+    x1dints = tmp_path / "x1dints.fits"
+    whtlt = tmp_path / "whtlt.ecsv"
+    output = tmp_path / "qa"
+    output.mkdir()
+    _x1dints(x1dints)
+    Table(
+        {
+            "MJD_UTC": [1.0, 1.1],
+            "whitelight_flux_order_1": [10.0, 11.0],
+            "whitelight_flux_order_2": [8.0, 9.0],
+        }
+    ).write(whtlt, format="ascii.ecsv")
+
+    generated = generate_stage3(x1dints, whtlt, output, DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+
+    assert {item.name for item in generated} == {
+        "spectra.png",
+        "white_light.png",
+        "spectroscopic_time_series.png",
+        "scatter_spectrum.png",
+        "point_to_point_difference.png",
+    }
+    assert all(item.stat().st_size > 0 for item in generated)
+
+
+def test_white_light_columns_and_spectroscopic_time_series_normalization_are_discovered(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "white.ecsv"
     Table(
         {
@@ -128,7 +191,32 @@ def test_white_light_columns_and_dynamic_normalization_are_discovered(tmp_path: 
     assert np.isnan(ppt[:, 1]).all()
 
 
-def test_f_lambda_conversion_and_dynamic_display_guardrails() -> None:
+def test_white_light_plot_has_combined_and_fixed_order_panels(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "x1dints.fits"
+    _x1dints(path)
+    groups, header, _, _ = spectra_from_x1dints(path)
+    captured = []
+
+    def capture(figure, output: Path) -> Path:
+        captured.extend(figure.axes)
+        return output
+
+    monkeypatch.setattr(soss, "save_figure", capture)
+    soss.white_light_proxy_plot(groups, soss.soss_title(header, "Stage 2"), tmp_path / "white.png")
+
+    assert [axis.get_title() for axis in captured] == [
+        soss.soss_title(header, "Stage 2"),
+        "Order 1",
+        "Order 2",
+        "Order 3",
+    ]
+    assert [line.get_color() for line in captured[0].get_lines()[:2]] == ["C0", "C1"]
+    assert captured[1].get_lines()[0].get_color() == "C0"
+    assert captured[2].get_lines()[0].get_color() == "C1"
+    assert len(captured[3].get_lines()) == 1  # Reference line only: no Order 3 data.
+
+
+def test_f_lambda_conversion_and_spectroscopic_time_series_guardrails() -> None:
     """F_nu conversion and display clipping preserve their physical definitions."""
     converted = flux_to_f_lambda(np.array([1.0]), np.array([1.0]), "Jy")
     assert np.allclose(converted, [2.99792458e-12], rtol=1e-7)
@@ -140,22 +228,133 @@ def test_f_lambda_conversion_and_dynamic_display_guardrails() -> None:
             [9.99, 0.1, 9.0, np.nan, 10.0],
         ]
     )
-    residual, good, limit = dynamic_spectrum_display(flux)
+    residual, good, limit = spectroscopic_time_series_display(flux)
     assert good.tolist() == [True, False, True, False, False]
     assert np.isnan(residual[:, 1]).all()
     assert np.isnan(residual[:, 3]).all()
     assert np.isnan(residual[:, 4]).all()
-    assert limit == DYNAMIC_SPECTRUM_CONFIG.scale_max_ppt
-    assert retained_wavelength_extent(
-        np.arange(5, dtype=float), np.array([False, True, True, False, True])
-    ) == (1.0, 2.0)
-    assert retained_channel_label(good) == "Retained: 2/5 (40%)"
+    assert limit == SPECTROSCOPIC_TIME_SERIES_CONFIG.scale_max_ppt
+    assert retained_channel_label(good) == "Good channels in window: 2/5 (40%)"
 
     small = np.array([[10.0], [10.001], [9.999]])
-    _, _, small_limit = dynamic_spectrum_display(small)
-    assert small_limit == DYNAMIC_SPECTRUM_CONFIG.scale_min_ppt
-    assert DYNAMIC_COLORBAR_LABEL == "Relative flux [ppt]"
-    assert np.allclose(dynamic_colormap().get_bad()[:3], [0.82, 0.82, 0.82])
+    _, _, small_limit = spectroscopic_time_series_display(small)
+    assert small_limit == SPECTROSCOPIC_TIME_SERIES_CONFIG.scale_min_ppt
+    assert SPECTROSCOPIC_TIME_SERIES_COLORBAR_LABEL == "Relative flux [ppt]"
+    assert np.allclose(spectroscopic_time_series_colormap().get_bad()[:3], [0.82, 0.82, 0.82])
+
+
+def test_spectroscopic_time_series_window_is_independent_of_quality_mask() -> None:
+    wavelength = np.array([0.65, 0.70, 0.80, 0.90, 1.00])
+    flux = np.array(
+        [[10.0, 10.0, 0.1, 10.0, 10.0], [10.0, 10.0, 0.1, 10.0, 10.0]]
+    )
+    window = spectroscopic_time_series_window(3, DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+    selected_wavelength, selected_flux = select_spectroscopic_time_series_window(
+        wavelength, flux, window
+    )
+    _, good, _ = spectroscopic_time_series_display(selected_flux)
+
+    assert window == (0.70, 0.95)
+    assert selected_wavelength.tolist() == [0.7, 0.8, 0.9]
+    assert good.tolist() == [True, False, True]
+    assert retained_channel_label(good) == "Good channels in window: 2/3 (67%)"
+
+
+def test_scatter_and_point_to_point_quantities_mask_bad_channels_and_use_ppt() -> None:
+    flux = np.array(
+        [[10.0, 10.0, np.nan], [12.0, 8.0, np.nan], [14.0, 10.0, np.nan]]
+    )
+    good = np.array([True, True, False])
+
+    scatter = relative_scatter_ppt(flux, good)
+    differences = point_to_point_difference_ppt(flux, good)
+
+    assert np.allclose(scatter[:2], [1e3 * 1.4826 * 2 / 12, 0])
+    assert np.isnan(scatter[2])
+    assert differences.shape == (2, 3)
+    assert np.allclose(differences[:, :2], [[1e3 * 2 / 12, -200], [1e3 * 2 / 12, 200]])
+    assert np.isnan(differences[:, 2]).all()
+    assert robust_ppt_limit(np.array([[1_000.0, -1_000.0]])) == 50.0
+    assert POINT_TO_POINT_COLORBAR_LABEL == "Point-to-point relative difference [ppt]"
+
+
+def test_spectra_plot_legend_labels_individual_integrations_and_median(
+    monkeypatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "x1dints.fits"
+    _x1dints(path)
+    groups, header, flux_unit, _ = spectra_from_x1dints(path)
+    captured: list[tuple[list[str], int]] = []
+
+    def capture(figure, output: Path) -> Path:
+        for axis in figure.axes:
+            legend = axis.get_legend()
+            assert legend is not None
+            captured.append(([text.get_text() for text in legend.get_texts()], legend._loc))
+        return output
+
+    monkeypatch.setattr(soss, "save_figure", capture)
+    soss.spectra_plot(
+        groups,
+        soss.soss_title(header, "Stage 2"),
+        flux_unit,
+        tmp_path / "spectra.png",
+        DEFAULT_SOSS_WAVELENGTH_WINDOWS,
+    )
+
+    assert captured
+    assert all(labels == ["Individual integrations", "Temporal median"] for labels, _ in captured)
+    assert all(location == 1 for _, location in captured)
+
+
+def test_soss_qa_regenerates_new_outputs_from_local_pipeline_products_only(tmp_path: Path) -> None:
+    config = _config(tmp_path / "work")
+    workspace = Workspace.for_selection(config.discovery.output_root, config.selection)
+    workspace.create()
+    stage2_x1dints = workspace.stage2 / "local_x1dints.fits"
+    stage3_x1dints = workspace.stage3 / "local_tso3_x1dints.fits"
+    whtlt = workspace.stage3 / "local_tso3_whtlt.ecsv"
+    _x1dints(stage2_x1dints)
+    _x1dints(stage3_x1dints)
+    Table(
+        {
+            "MJD_UTC": [1.0, 1.1],
+            "whitelight_flux_order_1": [10.0, 11.0],
+            "whitelight_flux_order_2": [8.0, 9.0],
+        }
+    ).write(whtlt, format="ascii.ecsv")
+    manifest = ManifestStore(workspace.manifest, "TOI-3884")
+    manifest.initialize()
+    for run_id, operation, outputs in (
+        ("stage2-local", "stage2", [_record(stage2_x1dints)]),
+        ("stage3-local", "stage3", [_record(stage3_x1dints), _record(whtlt)]),
+    ):
+        manifest.append(
+            {
+                "run_id": run_id,
+                "operation": operation,
+                "status": "success",
+                "exposure_identifier": config.selection.exposure_id,
+                "segment_number": 1,
+                "outputs": outputs,
+            }
+        )
+
+    results = generate_qa(config, stages=("stage2", "stage3"))
+
+    assert [result.stage for result in results] == ["stage2", "stage3"]
+    for result in results:
+        assert {path.name for path in result.outputs} == {
+            "spectra.png",
+            "white_light.png",
+            "spectroscopic_time_series.png",
+            "scatter_spectrum.png",
+            "point_to_point_difference.png",
+        }
+    assert manifest.entry("stage2-local") is not None
+    assert manifest.entry("stage2-local")["status"] == "success"
+    assert manifest.entry("stage3-local") is not None
+    assert manifest.entry("stage3-local")["status"] == "success"
 
 
 def test_qa_provenance_failure_and_stale_rebuild_do_not_change_pipeline_status(

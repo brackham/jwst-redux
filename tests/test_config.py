@@ -37,6 +37,7 @@ def test_validate_toi3884_exposure_selection() -> None:
     assert config.parameter_overrides == {}
     assert config.spec2_parameter_overrides == {}
     assert config.tso3_parameter_overrides == {}
+    assert config.soss_wavelength_windows == {1: (0.85, 2.83), 2: (0.60, 1.00), 3: (0.70, 0.95)}
 
 
 def test_reject_unimplemented_target_matching_strategy(tmp_path: Path) -> None:
