@@ -10,7 +10,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import DiscoveryConfig, load_config, load_discovery_config, load_write_config
+from .batch import BatchWorkflowResult, PreparedBatch, prepare_batch, run_batch
+from .config import (
+    DiscoveryConfig,
+    load_batch_config,
+    load_config,
+    load_discovery_config,
+    load_write_config,
+)
 from .exceptions import JWSTReduxError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
@@ -94,21 +101,40 @@ def download(
 def run(
     config: Path,
     through: Annotated[
-        ThroughStage,
+        ThroughStage | None,
         typer.Option("--through", help="Run through this pipeline stage."),
-    ] = ThroughStage.stage1,
+    ] = None,
+    all_branches: bool = typer.Option(
+        False,
+        "--all",
+        help="Sequentially run every planner-selected branch to its planned endpoint.",
+    ),
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
         help="Redownload the raw input and rerun all requested stages.",
     ),
 ) -> None:
-    """Run every segment of the selected exposure through the requested stage."""
+    """Run an explicit selected exposure, or all planned branches with ``--all``."""
+    if all_branches:
+        if through is not None:
+            _abort(JWSTReduxError("--through is not used with --all; every branch uses its planned endpoint."))
+        try:
+            batch_config = load_batch_config(config)
+            prepared = prepare_batch(batch_config)
+        except (JWSTReduxError, OSError, TypeError, ValueError) as error:
+            _abort(error)
+        _print_batch_summary(prepared)
+        result = run_batch(batch_config, prepared=prepared)
+        _print_batch_result(result)
+        if result.failures:
+            raise typer.Exit(code=1)
+        return
     try:
         write_config = load_write_config(config)
         result = run_selected_through(
             write_config,
-            through=through.value,
+            through=(through or ThroughStage.stage1).value,
             overwrite=overwrite,
         )
     except (JWSTReduxError, OSError, TypeError) as error:
@@ -331,6 +357,53 @@ def _print_reduction_branch(number: int, reduction_plan: ReductionPlan) -> None:
     console.print(stage_table)
     for note in reduction_plan.notes:
         console.print(f"  [yellow]Pipeline limitation:[/] {note}")
+
+
+def _print_batch_summary(prepared: PreparedBatch) -> None:
+    """Show all branch decisions before the first download or pipeline invocation."""
+    console.print("[bold]Batch execution plan: planned endpoints[/]")
+    console.print(
+        f"{_counted(len(prepared.plans), 'SOSS dataset')} containing "
+        f"{_counted(len(prepared.discovery.exposures), 'exposure')} and "
+        f"{_counted(len(prepared.branches), 'execution branch')}."
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Dataset / exposure")
+    table.add_column("Segments", justify="right")
+    table.add_column("Planned pipeline path")
+    table.add_column("Action")
+    for branch in prepared.branches:
+        stages = " → ".join(
+            stage.removesuffix("Pipeline") for stage in branch.pipeline_path
+        )
+        actions = ", ".join(
+            f"{stage.removesuffix('Pipeline')}={action}"
+            for stage, action in branch.stage_actions
+        )
+        table.add_row(branch.label, str(branch.segment_count), stages, actions)
+    console.print(table)
+    console.print(
+        "[dim]No download or calibration starts until this summary has been printed. "
+        "Batch policy is sequential; the configured failure policy controls later branches.[/]"
+    )
+
+
+def _print_batch_result(result: BatchWorkflowResult) -> None:
+    for branch_result in result.branches:
+        if branch_result.status == "success":
+            console.print(
+                f"[green]Completed[/] {branch_result.branch.label} "
+                f"through {branch_result.branch.endpoint}."
+            )
+        else:
+            console.print(
+                f"[red]Failed[/] {branch_result.branch.label}: {branch_result.error}"
+            )
+    if result.failures:
+        console.print(
+            f"[yellow]{len(result.failures)} branch failure(s) recorded; successful siblings "
+            "are preserved and a rerun resumes incomplete work.[/]"
+        )
 
 
 def _search_summary(result: DiscoveryResult) -> str:

@@ -68,6 +68,21 @@ Within each configured wavelength window, SOSS QA displays all mathematically va
 stricter pathological-variation criterion is recorded as a science-quality classification rather than
 used to hide noisy diagnostic data.
 
+For a selector-free, metadata-planned sequential batch, use the 5799/5863 configuration:
+
+```bash
+jwst-redux plan configs/toi3884-all-soss.yaml
+jwst-redux run configs/toi3884-all-soss.yaml --all
+```
+
+`--all` intentionally uses the endpoint resolved separately for every branch: Detector1 for F277W,
+Spec2 for single-integration CLEAR SOSS, and TSO3 only where metadata supports it. It does not accept
+`--through`. Before any download or calibration, it prints each dataset/exposure, segment count,
+planned path, and a local run/resume assessment. Execution is sequential. The default
+`options.batch_failure_policy: continue` attempts later independent branches after a failure, records
+that failure in the branch manifest, returns nonzero after the batch, and lets a later invocation
+resume only incomplete work. Set the policy to `stop` to leave later branches untouched.
+
 The remaining workflow commands are scaffolded:
 
 ```bash

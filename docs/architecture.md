@@ -45,6 +45,17 @@ segment, constructs a schema-validated official Level-3 association with `jwst.a
 runs `Tso3Pipeline` once. Its resume key includes association content, all member paths, and upstream
 Stage-2 run IDs; actual TSO3 outputs are captured rather than assumed.
 
+### Batch orchestration
+
+Selector-free batch execution first performs the usual read-only discovery and planning, retaining
+the `ScienceDataset -> Exposure -> Product -> ReductionGroup` hierarchy. It materializes the existing
+selector-scoped write configuration for each planned exposure branch, then runs sequentially to that
+branch's resolver-selected endpoint. The batch layer contains no target/program endpoint table: an
+F277W branch can complete at Detector1, a single-integration CLEAR branch at Spec2, and a science
+time-series branch at TSO3. Existing isolated workspaces/manifests are reused. The default policy
+continues after an independent branch failure, preserves successful siblings, returns nonzero at the
+end, and lets the next invocation resume incomplete work.
+
 ### `workspace.py`
 Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and manifests live. Each
 write workspace is rooted below `output.root` by the complete explicit selector (program, observation,

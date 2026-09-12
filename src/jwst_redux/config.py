@@ -95,6 +95,24 @@ class WriteConfig:
     )
 
 
+@dataclass(frozen=True)
+class BatchConfig:
+    """Selector-free settings for sequential, planner-driven batch execution."""
+
+    discovery: DiscoveryConfig
+    endpoint: str
+    crds_context: str
+    parameter_overrides: dict[str, Any]
+    spec2_parameter_overrides: dict[str, Any]
+    tso3_parameter_overrides: dict[str, Any]
+    overwrite: bool
+    failure_policy: str
+    qa_enabled: bool = False
+    soss_wavelength_windows: dict[int, tuple[float, float]] = field(
+        default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
+    )
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     """Load a YAML configuration file."""
     config_path = Path(path)
@@ -200,6 +218,78 @@ def load_write_config(path: str | Path) -> WriteConfig:
         overwrite=overwrite,
         qa_enabled=qa_enabled,
         soss_wavelength_windows=soss_wavelength_windows,
+    )
+
+
+def load_batch_config(path: str | Path) -> BatchConfig:
+    """Load a selector-free batch config whose endpoint is planner controlled."""
+    discovery = load_discovery_config(path)
+    data = load_config(path)
+    stage1 = data.get("stage1", {})
+    if not isinstance(stage1, dict):
+        raise ConfigurationError("Configuration field 'stage1' must be a mapping when supplied.")
+    if "selection" in stage1:
+        raise ConfigurationError(
+            "Batch configuration must not contain 'stage1.selection'; use ordinary run "
+            "without --all for an explicit selected exposure."
+        )
+    pipeline = _mapping(data, "pipeline")
+    options = _mapping(data, "options")
+    qa = data.get("qa", {})
+    if not isinstance(qa, dict):
+        raise ConfigurationError("Configuration field 'qa' must be a mapping.")
+    qa_enabled = qa.get("enabled", True)
+    if not isinstance(qa_enabled, bool):
+        raise ConfigurationError("Configuration field 'qa.enabled' must be boolean.")
+    endpoint = str(pipeline.get("endpoint", "planned")).strip().lower()
+    if endpoint == "auto":
+        endpoint = "planned"
+    if endpoint != "planned":
+        raise ConfigurationError("Batch pipeline.endpoint must be 'planned' or 'auto'.")
+    failure_policy = str(options.get("batch_failure_policy", "continue")).strip().lower()
+    if failure_policy not in {"continue", "stop"}:
+        raise ConfigurationError("options.batch_failure_policy must be 'continue' or 'stop'.")
+    overrides = pipeline.get("overrides", {})
+    spec2_overrides = pipeline.get("spec2_overrides", {})
+    tso3_overrides = pipeline.get("tso3_overrides", {})
+    for field_name, value in (
+        ("pipeline.overrides", overrides),
+        ("pipeline.spec2_overrides", spec2_overrides),
+        ("pipeline.tso3_overrides", tso3_overrides),
+    ):
+        if not isinstance(value, dict):
+            raise ConfigurationError(f"Configuration field '{field_name}' must be a mapping.")
+    overwrite = options.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise ConfigurationError("Configuration field 'options.overwrite' must be boolean.")
+    return BatchConfig(
+        discovery=discovery,
+        endpoint=endpoint,
+        crds_context=str(pipeline.get("crds_context", "auto")).strip().lower(),
+        parameter_overrides=dict(overrides),
+        spec2_parameter_overrides=dict(spec2_overrides),
+        tso3_parameter_overrides=dict(tso3_overrides),
+        overwrite=overwrite,
+        failure_policy=failure_policy,
+        qa_enabled=qa_enabled,
+        soss_wavelength_windows=_soss_wavelength_windows(qa),
+    )
+
+
+def write_config_for_exposure(
+    config: BatchConfig, selection: ExposureSelectionConfig
+) -> WriteConfig:
+    """Materialize one isolated write configuration for a planned branch."""
+    return WriteConfig(
+        discovery=config.discovery,
+        selection=selection,
+        crds_context=config.crds_context,
+        parameter_overrides=dict(config.parameter_overrides),
+        spec2_parameter_overrides=dict(config.spec2_parameter_overrides),
+        tso3_parameter_overrides=dict(config.tso3_parameter_overrides),
+        overwrite=config.overwrite,
+        qa_enabled=config.qa_enabled,
+        soss_wavelength_windows=dict(config.soss_wavelength_windows),
     )
 
 

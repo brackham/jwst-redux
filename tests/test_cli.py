@@ -81,3 +81,23 @@ def test_run_reports_pipeline_error_to_stderr_without_masking_it(monkeypatch) ->
     assert result.exit_code == 1
     assert "original TSO3 pipeline error" in result.stderr
     assert "Console.print" not in result.output
+
+
+def test_run_all_uses_batch_planned_endpoints_without_through(monkeypatch) -> None:
+    prepared = object()
+    batch_config = object()
+    result = type("BatchResult", (), {"failures": ()})()
+    calls: list[object] = []
+    monkeypatch.setattr(cli, "load_batch_config", lambda _: batch_config)
+    monkeypatch.setattr(cli, "prepare_batch", lambda _: prepared)
+    monkeypatch.setattr(cli, "run_batch", lambda config, prepared: result)
+    monkeypatch.setattr(cli, "_print_batch_summary", lambda value: calls.append(value))
+    monkeypatch.setattr(cli, "_print_batch_result", lambda value: calls.append(value))
+
+    success = CliRunner().invoke(cli.app, ["run", "batch.yaml", "--all"])
+    rejected = CliRunner().invoke(cli.app, ["run", "batch.yaml", "--all", "--through", "stage3"])
+
+    assert success.exit_code == 0
+    assert calls == [prepared, result]
+    assert rejected.exit_code == 1
+    assert "every branch uses its planned endpoint" in rejected.stderr

@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from jwst_redux.config import load_config, load_discovery_config, load_write_config
+from jwst_redux.config import (
+    load_batch_config,
+    load_config,
+    load_discovery_config,
+    load_write_config,
+)
 from jwst_redux.exceptions import ConfigurationError
 
 
@@ -38,6 +43,15 @@ def test_validate_toi3884_exposure_selection() -> None:
     assert config.spec2_parameter_overrides == {}
     assert config.tso3_parameter_overrides == {}
     assert config.soss_wavelength_windows == {1: (0.85, 2.83), 2: (0.60, 1.00), 3: (0.70, 0.95)}
+
+
+def test_validate_selector_free_toi3884_batch_config() -> None:
+    path = Path(__file__).parents[1] / "configs" / "toi3884-all-soss.yaml"
+    config = load_batch_config(path)
+    assert config.discovery.query.archive_target_names == ("TOI-3884", "TOI-3884b")
+    assert config.discovery.query.proposal_ids == ("5799", "5863")
+    assert config.endpoint == "planned"
+    assert config.failure_policy == "continue"
 
 
 def test_reject_unimplemented_target_matching_strategy(tmp_path: Path) -> None:

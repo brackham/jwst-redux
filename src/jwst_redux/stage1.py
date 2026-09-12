@@ -323,6 +323,14 @@ def run_selected_through(
     if through not in {"stage1", "stage2", "stage3"}:
         raise PipelineExecutionError(f"Unsupported --through stage: {through}")
     selected_exposure = _discover_selected_exposure(config, discoverer)
+    from .pipeline.stages import pipeline_path_for
+
+    tso3_supported = "Tso3Pipeline" in pipeline_path_for(selected_exposure.exposure).classes
+    if through == "stage3" and not tso3_supported:
+        raise PipelineExecutionError(
+            "Selected exposure does not have a planned TSO3 endpoint: "
+            f"{selected_exposure.exposure.exposure_id}."
+        )
     segment_results: list[SegmentWorkflowResult] = []
     for product in selected_exposure.products:
         selected = SelectedProduct(
@@ -356,7 +364,7 @@ def run_selected_through(
         segment_results.append(SegmentWorkflowResult(stage1=stage1, stage2=stage2))
     readiness = (
         stage3_readiness(config, selected_exposure=selected_exposure)
-        if through in {"stage2", "stage3"}
+        if through in {"stage2", "stage3"} and tso3_supported
         else None
     )
     stage3 = (
