@@ -31,8 +31,10 @@ For the TOI-3884 example, `query.archive_target_names` records the target names 
 `query.proposal_ids` field may be `null` for all proposals, one proposal ID, or a YAML list of IDs.
 
 The current write milestone uses the explicit scientific-dataset and exposure selector in
-`stage1.selection`. The TOI-3884 configuration selects GO-5799 Obs 001 / Visit 001,
-`jw05799001001_04101_00001`; all three validated `_uncal` segments are processed in numeric order:
+`stage1.selection`. The TOI-3884 configuration selects GO-5799 Obs 002 / Visit 001 / Exposure
+04101, `jw05799002001_04101_00001`; all three validated `_uncal` segments are processed in numeric
+order. Each exact selector receives its own workspace below `output.root`, so manifests, logs,
+products, QA, and Stage 3 associations remain isolated from other visits:
 
 ```bash
 jwst-redux run configs/toi3884.yaml

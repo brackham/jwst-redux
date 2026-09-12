@@ -46,9 +46,11 @@ runs `Tso3Pipeline` once. Its resume key includes association content, all membe
 Stage-2 run IDs; actual TSO3 outputs are captured rather than assumed.
 
 ### `workspace.py`
-Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and manifests live. It is
-created only by write commands; search and plan never instantiate it. CRDS cache files remain external
-infrastructure.
+Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and manifests live. Each
+write workspace is rooted below `output.root` by the complete explicit selector (program, observation,
+visit, exposure number, and exposure ID), preventing selected visits from sharing products, manifests,
+logs, QA, or associations. It is created only by write commands; search and plan never instantiate it.
+CRDS cache files remain external infrastructure.
 
 ### `qa/`
 

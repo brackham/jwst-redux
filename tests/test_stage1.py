@@ -16,6 +16,7 @@ from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 from jwst_redux.models import Product
 from jwst_redux.pipeline.runner import expected_stage1_outputs
 from jwst_redux.stage1 import run_selected_stage1
+from jwst_redux.workspace import Workspace
 
 
 class FakeDownloader:
@@ -106,7 +107,7 @@ def test_stage1_creates_workspace_invokes_pipeline_and_records_success(
         context_resolver=lambda _: "jwst_test.pmap",
     )
 
-    root = config.discovery.output_root
+    root = Workspace.for_selection(config.discovery.output_root, config.selection).root
     assert all(
         (root / name).is_dir() for name in ("raw", "stage1", "stage2", "stage3", "logs")
     )
@@ -157,7 +158,8 @@ def test_stage1_records_failure_and_pipeline_traceback(tmp_path, exposure_record
         )
 
     manifest = json.loads(
-        (config.discovery.output_root / "manifest.json").read_text(encoding="utf-8")
+        Workspace.for_selection(config.discovery.output_root, config.selection)
+        .manifest.read_text(encoding="utf-8")
     )
     entry = manifest["runs"][-1]
     assert entry["status"] == "failed"
@@ -191,7 +193,8 @@ def test_stage1_resume_and_overwrite_behavior(tmp_path, exposure_records) -> Non
     assert len(pipeline.calls) == 2
 
     manifest = json.loads(
-        (config.discovery.output_root / "manifest.json").read_text(encoding="utf-8")
+        Workspace.for_selection(config.discovery.output_root, config.selection)
+        .manifest.read_text(encoding="utf-8")
     )
     assert [entry["status"] for entry in manifest["runs"]] == [
         "success",

@@ -5,10 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import ExposureSelectionConfig
+
 
 @dataclass(frozen=True)
 class Workspace:
     root: Path
+
+    @classmethod
+    def for_selection(cls, output_root: Path, selection: ExposureSelectionConfig) -> Workspace:
+        """Return the isolated workspace for one explicit selected exposure."""
+        return cls(output_root / selection.workspace_name)
 
     @property
     def raw(self) -> Path:

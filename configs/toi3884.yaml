@@ -19,10 +19,12 @@ products:
 
 stage1:
   selection:
+    # GO-5799 Obs 002 / Visit 001 / Exposure 04101
     program_id: 5799
-    observation_id: 1
+    observation_id: 2
     visit_number: 1
-    exposure_id: jw05799001001_04101_00001
+    exposure_number: "04101"
+    exposure_id: jw05799002001_04101_00001
 
 pipeline:
   stages: auto

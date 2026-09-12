@@ -62,7 +62,7 @@ def generate_qa(
     unknown = set(stages).difference({"stage1", "stage2", "stage3"})
     if unknown:
         raise JWSTReduxError(f"Unsupported QA stage(s): {', '.join(sorted(unknown))}")
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = Workspace.for_selection(config.discovery.output_root.resolve(), config.selection)
     if not workspace.manifest.is_file():
         raise JWSTReduxError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
@@ -70,7 +70,17 @@ def generate_qa(
     results: list[QAResult] = []
     for stage in stages:
         for pipeline_entry, inputs in _pipeline_products(manifest, config, stage):
-            results.append(_generate_one(manifest, workspace, stage, pipeline_entry, inputs, force))
+            results.append(
+                _generate_one(
+                    manifest,
+                    workspace,
+                    _selection_record(config),
+                    stage,
+                    pipeline_entry,
+                    inputs,
+                    force,
+                )
+            )
     if not results:
         raise JWSTReduxError("No successful pipeline products matched the selected dataset/stage.")
     return tuple(results)
@@ -86,6 +96,7 @@ def _pipeline_products(
         for entry in manifest.entries()
         if entry.get("operation") == operation
         and entry.get("status") == "success"
+        and entry.get("selection", _selection_record(config)) == _selection_record(config)
         and entry.get("exposure_identifier") == config.selection.exposure_id
     ]
     selected: dict[str, dict[str, Any]] = {}
@@ -132,6 +143,7 @@ def _required_paths(entry: dict[str, Any], stage: str) -> tuple[Path, ...] | Non
 def _generate_one(
     manifest: ManifestStore,
     workspace: Workspace,
+    selection: dict[str, str],
     stage: str,
     pipeline_entry: dict[str, Any],
     inputs: tuple[Path, ...],
@@ -155,6 +167,7 @@ def _generate_one(
         "run_id": run_id,
         "run_key": run_key,
         "operation": "qa",
+        "selection": selection,
         "stage": stage,
         "status": "running",
         "start_time": utc_now(),
@@ -224,6 +237,20 @@ def _plot(stage: str, inputs: tuple[Path, ...], output_dir: Path) -> tuple[Path,
 
 def _file_record(path: Path) -> dict[str, Any]:
     return {"path": str(path), "size_bytes": path.stat().st_size}
+
+
+def _selection_record(config: WriteConfig) -> dict[str, str]:
+    """Match QA candidates to the complete selected exposure identity."""
+    selection = config.selection
+    return {
+        "program_id": selection.program_id,
+        "observation_id": selection.observation_id,
+        "visit_number": selection.visit_number,
+        "exposure_number": selection.resolved_exposure_number,
+        "exposure_id": selection.exposure_id,
+        "label": selection.label,
+        "workspace_name": selection.workspace_name,
+    }
 
 
 def _set_pipeline_qa_status(

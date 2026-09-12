@@ -112,7 +112,7 @@ def download_selected(
 ) -> DownloadWorkflowResult:
     """Discover through the domain model and download exactly the configured product."""
     selected = _discover_selected(config, discoverer)
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = _workspace(config)
     workspace.create()
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     manifest.initialize()
@@ -171,7 +171,7 @@ def run_selected_stage1(
     implementation once per validated segment.
     """
     selected = _selected or _discover_selected(config, discoverer)
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = _workspace(config)
     workspace.create()
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     manifest.initialize()
@@ -429,7 +429,7 @@ def stage3_readiness(
 ) -> Stage3Readiness:
     """Resolve all intact Stage-2 `_calints` products for selected TSO3 execution."""
     selected = selected_exposure or _discover_selected_exposure(config, discoverer)
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = _workspace(config)
     if not workspace.manifest.is_file():
         raise PipelineExecutionError(
             f"Stage 3 is not ready: no manifest exists for {selected.exposure.exposure_id}."
@@ -474,7 +474,7 @@ def _run_selected_stage3(
     context_resolver: ContextResolver | None,
 ) -> Stage3WorkflowResult:
     """Create/reuse one association and run TSO3 for the selected exposure only."""
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = _workspace(config)
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     selected = readiness.selected
     _validate_stage3_group(selected)
@@ -649,7 +649,7 @@ def _run_selected_stage2(
     overwrite: bool,
     pipeline: PipelineCallable | None,
 ) -> Stage2WorkflowResult:
-    workspace = Workspace(config.discovery.output_root.resolve())
+    workspace = _workspace(config)
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     resumed_from = stage1.manifest_entry.get("resumed_from_run_id")
     if isinstance(resumed_from, str):
@@ -851,6 +851,7 @@ def _base_entry(
     product = selected.product
     return {
         "scientific_target": config.discovery.query.target,
+        "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
         "exposure_identifier": exposure.exposure_id,
         "segment_number": product.segment_number,
@@ -871,6 +872,7 @@ def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[
     """Provenance shared by a single-exposure TSO3 association/run."""
     return {
         "scientific_target": config.discovery.query.target,
+        "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
         "exposure_identifier": selected.exposure.exposure_id,
         "pipeline_class": "jwst.pipeline.Tso3Pipeline",
@@ -930,6 +932,25 @@ def _resume_identity(
         "crds_context": crds_context,
         "input_path": str(input_path),
         "output_paths": [str(path) for path in outputs],
+    }
+
+
+def _workspace(config: WriteConfig) -> Workspace:
+    """Resolve the write workspace isolated by the complete selected exposure."""
+    return Workspace.for_selection(config.discovery.output_root.resolve(), config.selection)
+
+
+def _selection_record(config: WriteConfig) -> dict[str, str]:
+    """Stable, readable selector retained on every pipeline manifest entry."""
+    selection = config.selection
+    return {
+        "program_id": selection.program_id,
+        "observation_id": selection.observation_id,
+        "visit_number": selection.visit_number,
+        "exposure_number": selection.resolved_exposure_number,
+        "exposure_id": selection.exposure_id,
+        "label": selection.label,
+        "workspace_name": selection.workspace_name,
     }
 
 

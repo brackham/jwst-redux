@@ -78,10 +78,12 @@ def download(
 ) -> None:
     """Download the single Stage 1 product selected in CONFIG."""
     try:
-        result = download_selected(load_write_config(config), overwrite=overwrite)
+        write_config = load_write_config(config)
+        result = download_selected(write_config, overwrite=overwrite)
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
     action = "Reused" if result.download.reused else "Downloaded"
+    console.print(f"Selected: {write_config.selection.label}")
     console.print(
         f"[green]{action}[/] {result.download.path} "
         f"({_format_bytes(result.download.size_bytes)})"
@@ -103,13 +105,15 @@ def run(
 ) -> None:
     """Run every segment of the selected exposure through the requested stage."""
     try:
+        write_config = load_write_config(config)
         result = run_selected_through(
-            load_write_config(config),
+            write_config,
             through=through.value,
             overwrite=overwrite,
         )
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
+    console.print(f"Selected: {write_config.selection.label}")
     for segment in result.segments:
         _print_segment_result(segment)
     if result.stage3 is not None:
@@ -134,13 +138,15 @@ def qa(
 ) -> None:
     """Regenerate QA from successful local pipeline products only."""
     try:
+        write_config = load_write_config(config)
         results = generate_qa(
-            load_write_config(config),
+            write_config,
             stages=tuple(item.value for item in stage or ()) or ("stage1", "stage2", "stage3"),
             force=force,
         )
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
+    console.print(f"Selected: {write_config.selection.label}")
     for result in results:
         color = "green" if result.status in {"success", "skipped"} else "red"
         console.print(f"[{color}]QA {result.stage} {result.status}[/]: {result.input_paths[0]}")

@@ -162,7 +162,7 @@ def test_qa_provenance_failure_and_stale_rebuild_do_not_change_pipeline_status(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path / "work")
-    workspace = Workspace(config.discovery.output_root)
+    workspace = Workspace.for_selection(config.discovery.output_root, config.selection)
     workspace.create()
     manifest = ManifestStore(workspace.manifest, "TOI-3884")
     manifest.initialize()

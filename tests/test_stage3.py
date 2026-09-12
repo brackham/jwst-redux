@@ -16,6 +16,7 @@ from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 from jwst_redux.models import Product
 from jwst_redux.pipeline.runner import expected_stage1_outputs, expected_stage2_outputs
 from jwst_redux.stage1 import run_selected_through, stage3_readiness
+from jwst_redux.workspace import Workspace
 
 
 class FakeDownloader:
@@ -166,7 +167,9 @@ def test_stage3_resolves_manifest_inputs_constructs_association_and_records_outp
         "jw05799001001_04101_00001-seg002_nis_calints.fits",
         "jw05799001001_04101_00001-seg003_nis_calints.fits",
     ]
-    assert association_path.parent == config.discovery.output_root / "stage3" / "associations"
+    assert association_path.parent == Workspace.for_selection(
+        config.discovery.output_root, config.selection
+    ).associations
     assert {
         (association_path.parent / member["expname"]).resolve()
         for member in association["products"][0]["members"]
@@ -184,6 +187,84 @@ def test_stage3_resolves_manifest_inputs_constructs_association_and_records_outp
     }
     assert result.stage3.log_path.is_file()
     assert "Tso3Pipeline association=" in result.stage3.log_path.read_text(encoding="utf-8")
+
+
+def test_obs002_is_selected_in_an_isolated_workspace_without_touching_obs001(
+    tmp_path, exposure_records
+) -> None:
+    """The second GO-5799 visit is a distinct domain selection and reduction workspace."""
+    config, _ = _case(tmp_path, exposure_records)
+    obs001_id = "jw05799001001_04101_00001"
+    obs002_id = "jw05799002001_04101_00001"
+
+    def exposure_with_segments(record: dict) -> object:
+        exposure_id = str(record["fileSetName"])
+        products = tuple(
+            Product(
+                uri=f"mast:JWST/product/{exposure_id}-seg{segment:03d}_nis_uncal.fits",
+                filename=f"{exposure_id}-seg{segment:03d}_nis_uncal.fits",
+                size_bytes=4,
+                exposure_id=exposure_id,
+                suffix="_uncal",
+                product_type="science",
+                segment_number=segment,
+                access="PUBLIC",
+            )
+            for segment in (1, 2, 3)
+        )
+        return replace(normalize_exposure(record), segment_count=3, products=products)
+
+    discovery = DiscoveryResult(
+        datasets=build_science_datasets(
+            tuple(exposure_with_segments(record) for record in exposure_records)
+        )
+    )
+    config = replace(
+        config,
+        selection=ExposureSelectionConfig(
+            program_id="05799",
+            observation_id="002",
+            visit_number="001",
+            exposure_number="04101",
+            exposure_id=obs002_id,
+        ),
+    )
+    downloader = FakeDownloader()
+    detector1 = FakeDetector1()
+    spec2 = FakeSpec2()
+    tso3 = FakeTso3()
+
+    result = run_selected_through(
+        config,
+        **_arguments(discovery, downloader, detector1, spec2, tso3),
+    )
+
+    assert result.stage3 is not None and result.stage3.status == "success"
+    workspace = Workspace.for_selection(config.discovery.output_root, config.selection)
+    obs001_workspace = Workspace.for_selection(
+        config.discovery.output_root,
+        ExposureSelectionConfig("05799", "001", "001", obs001_id, "04101"),
+    )
+    assert workspace.root.is_dir()
+    assert not obs001_workspace.root.exists()
+    assert workspace.root.name.startswith("go-5799-obs-002-visit-001-exposure-04101-")
+    assert workspace.logs.is_dir()
+    assert all(workspace.qa(stage).is_dir() for stage in ("stage1", "stage2", "stage3"))
+    assert all(obs002_id in uri for uri in downloader.calls)
+    assert all(obs002_id in path.name for path in detector1.calls + spec2.calls)
+    assert all(obs001_id not in path.name for path in detector1.calls + spec2.calls)
+    assert all(obs002_id in path.name for path in result.stage3.readiness.calints_inputs)
+    assert result.stage3.association.path.parent == workspace.associations
+
+    association = json.loads(result.stage3.association.path.read_text(encoding="utf-8"))
+    members = association["products"][0]["members"]
+    assert len(members) == 3
+    assert all(obs002_id in Path(member["expname"]).name for member in members)
+    assert all(obs001_id not in Path(member["expname"]).name for member in members)
+
+    manifest = json.loads(workspace.manifest.read_text(encoding="utf-8"))
+    assert all(entry["selection"]["observation_id"] == "002" for entry in manifest["runs"])
+    assert all(obs001_id not in json.dumps(entry) for entry in manifest["runs"])
 
 
 def test_stage3_refuses_missing_manifest_calints_before_pipeline(tmp_path, exposure_records) -> None:
@@ -224,7 +305,8 @@ def test_stage3_failure_resume_membership_change_and_overwrite(tmp_path, exposur
             config,
             **_arguments(discovery, FakeDownloader(), FakeDetector1(), FakeSpec2(), first),
         )
-    manifest_path = config.discovery.output_root / "manifest.json"
+    workspace = Workspace.for_selection(config.discovery.output_root, config.selection)
+    manifest_path = workspace.manifest
     failed = json.loads(manifest_path.read_text(encoding="utf-8"))["runs"][-1]
     assert failed["operation"] == "stage3"
     assert failed["status"] == "failed"
@@ -255,7 +337,7 @@ def test_stage3_failure_resume_membership_change_and_overwrite(tmp_path, exposur
         for entry in reversed(manifest["runs"])
         if entry["operation"] == "stage2" and entry["status"] == "success"
     )
-    alternate = config.discovery.output_root / "stage2" / "alternate-seg003_nis_calints.fits"
+    alternate = workspace.stage2 / "alternate-seg003_nis_calints.fits"
     alternate.write_bytes(b"alternate-calints")
     changed = {
         **original,

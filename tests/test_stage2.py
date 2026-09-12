@@ -16,6 +16,7 @@ from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 from jwst_redux.models import Product
 from jwst_redux.pipeline.runner import expected_stage1_outputs, expected_stage2_outputs
 from jwst_redux.stage1 import run_selected_through, stage3_readiness
+from jwst_redux.workspace import Workspace
 
 
 class FakeDownloader:
@@ -165,7 +166,7 @@ def test_partial_failure_stops_sequence_and_later_run_resumes_each_segment(
             **_arguments(discovery, downloader, first_detector1, FakeSpec2(fail_segment=2)),
         )
 
-    manifest_path = config.discovery.output_root / "manifest.json"
+    manifest_path = Workspace.for_selection(config.discovery.output_root, config.selection).manifest
     failed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert [(entry["operation"], entry["segment_number"], entry["status"]) for entry in failed_manifest["runs"]] == [
         ("stage1", 1, "success"),

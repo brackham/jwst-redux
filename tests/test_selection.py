@@ -22,10 +22,10 @@ def test_selection_traverses_dataset_exposure_and_all_segment_children(
 
     assert dict(selected.dataset.identity) == {
         "program_id": "05799",
-        "observation_id": "001",
+        "observation_id": "002",
         "visit_number": "001",
     }
-    assert selected.exposure.exposure_id == "jw05799001001_04101_00001"
+    assert selected.exposure.exposure_id == "jw05799002001_04101_00001"
     assert [product.segment_number for product in selected.products] == [1, 2, 3]
 
     missing = type(config.selection)(
