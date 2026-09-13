@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..exceptions import PlanningError
 from ..models import Exposure
+from ..modes import BOTS_MODE, SOSS_MODE, mode_key, nirspec_bots_detectors
 
 
 @dataclass(frozen=True)
@@ -17,15 +18,24 @@ class PipelinePath:
 
 
 def pipeline_path_for(exposure: Exposure) -> PipelinePath:
-    """Resolve the validated NIRISS/SOSS path from normalized metadata."""
-    if (
-        exposure.instrument != "NIRISS"
-        or exposure.exposure_type != "NIS_SOSS"
-        or exposure.is_tso is not True
-    ):
+    """Resolve a supported official TSO path from normalized metadata."""
+    mode = mode_key(exposure)
+    if exposure.is_tso is not True:
         raise PlanningError(
-            "Only NIRISS NIS_SOSS observations with TSOVISIT=true are currently supported."
+            "Only supported TSO science observations with TSOVISIT=true can be planned."
         )
+
+    if mode == SOSS_MODE:
+        return _soss_pipeline_path(exposure)
+    if mode == BOTS_MODE:
+        return _bots_pipeline_path(exposure)
+    raise PlanningError(
+        "Only NIRISS/NIS_SOSS and NIRSpec/NRS_BRIGHTOBJ science observations are supported."
+    )
+
+
+def _soss_pipeline_path(exposure: Exposure) -> PipelinePath:
+    """Preserve the validated NIRISS/SOSS mode-specific limitations."""
 
     optical_elements = {
         element.strip().upper()
@@ -57,6 +67,19 @@ def pipeline_path_for(exposure: Exposure) -> PipelinePath:
                 "Single-integration NIRISS/SOSS exposures are excluded from official "
                 "Tso3 association generation; processing stops after Spec2Pipeline."
             ),
+        )
+    return PipelinePath(
+        classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline")
+    )
+
+
+def _bots_pipeline_path(exposure: Exposure) -> PipelinePath:
+    """Resolve the standard official NIRSpec/BOTS TSO pipeline path."""
+    nirspec_bots_detectors(exposure)
+    integrations = exposure.integration_count
+    if integrations is None or integrations < 1:
+        raise PlanningError(
+            f"Exposure {exposure.exposure_id} has invalid or missing NINTS metadata."
         )
     return PipelinePath(
         classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline")

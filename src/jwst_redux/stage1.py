@@ -13,7 +13,8 @@ from .config import WriteConfig
 from .exceptions import JWSTReduxError, PipelineExecutionError
 from .mast.download import DownloadResult, ProductDownloader, ensure_downloaded
 from .mast.query import DiscoveryResult, discover
-from .models import SelectedExposure, SelectedProduct
+from .models import Exposure, SelectedExposure, SelectedProduct
+from .modes import BOTS_MODE, mode_key
 from .pipeline.runner import (
     PipelineCallable,
     existing_stage1_outputs,
@@ -200,6 +201,11 @@ def run_selected_stage1(
             workspace.raw,
             overwrite=overwrite or config.overwrite,
             downloader=downloader,
+        )
+        _validate_nirspec_file_metadata(
+            download.path,
+            selected.exposure,
+            selected.product.detector or selected.exposure.detector,
         )
         crds_context = (context_resolver or resolve_crds_context)(config.crds_context)
         outputs = expected_stage1_outputs(download.path, workspace.stage1)
@@ -486,6 +492,10 @@ def _run_selected_stage3(
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     selected = readiness.selected
     _validate_stage3_group(selected)
+    for member in readiness.calints_inputs:
+        _validate_nirspec_file_metadata(
+            member, selected.exposure, selected.exposure.detector
+        )
     association = create_tso3_association(
         readiness.calints_inputs,
         workspace.associations,
@@ -857,7 +867,7 @@ def _base_entry(
 ) -> dict[str, Any]:
     exposure = selected.exposure
     product = selected.product
-    return {
+    entry = {
         "scientific_target": config.discovery.query.target,
         "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
@@ -874,11 +884,23 @@ def _base_entry(
             else parameter_overrides
         ),
     }
+    if mode_key(exposure) == BOTS_MODE:
+        entry.update(
+            {
+                "instrument": exposure.instrument,
+                "exposure_type": exposure.exposure_type,
+                "detector": product.detector or exposure.detector,
+                "grating": exposure.grating,
+                "filter": exposure.filter,
+                "subarray": exposure.subarray,
+            }
+        )
+    return entry
 
 
 def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[str, Any]:
     """Provenance shared by a single-exposure TSO3 association/run."""
-    return {
+    entry = {
         "scientific_target": config.discovery.query.target,
         "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
@@ -886,6 +908,18 @@ def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[
         "pipeline_class": "jwst.pipeline.Tso3Pipeline",
         "explicit_parameter_overrides": config.tso3_parameter_overrides,
     }
+    if mode_key(selected.exposure) == BOTS_MODE:
+        entry.update(
+            {
+                "instrument": selected.exposure.instrument,
+                "exposure_type": selected.exposure.exposure_type,
+                "detector": selected.exposure.detector,
+                "grating": selected.exposure.grating,
+                "filter": selected.exposure.filter,
+                "subarray": selected.exposure.subarray,
+            }
+        )
+    return entry
 
 
 def _validate_stage3_group(selected: SelectedExposure) -> None:
@@ -904,13 +938,62 @@ def _validate_stage3_group(selected: SelectedExposure) -> None:
             "Selected products are not compatible with an official TSO3 reduction group: "
             f"{selected.exposure.exposure_id} resolves to {pipeline_path.classes!r}."
         )
+    detectors = {product.detector for product in selected.products}
+    if (
+        mode_key(selected.exposure) == BOTS_MODE
+        and detectors != {selected.exposure.detector}
+    ):
+        raise PipelineExecutionError(
+            "TSO3 association products do not match their detector-specific branch: "
+            f"branch={selected.exposure.detector}, products={sorted(str(x) for x in detectors)}."
+        )
+
+
+def _validate_nirspec_file_metadata(
+    path: Path, exposure: Exposure, detector: str | None
+) -> None:
+    """Verify a local BOTS branch against authoritative FITS metadata."""
+    if mode_key(exposure) != BOTS_MODE:
+        return
+    from astropy.io import fits
+
+    try:
+        header = fits.getheader(path, 0)
+    except Exception as error:
+        raise PipelineExecutionError(
+            f"Cannot read NIRSpec/BOTS metadata from {path}: {error}"
+        ) from error
+    expected = {
+        "INSTRUME": exposure.instrument,
+        "EXP_TYPE": exposure.exposure_type,
+        "DETECTOR": detector,
+        "GRATING": exposure.grating,
+        "FILTER": exposure.filter,
+        "SUBARRAY": exposure.subarray,
+    }
+    mismatches = []
+    for keyword, value in expected.items():
+        actual = header.get(keyword)
+        normalized = None if actual is None else str(actual).strip().upper()
+        if value is not None and normalized != value:
+            mismatches.append(f"{keyword}={actual!r} (expected {value!r})")
+    if mismatches:
+        raise PipelineExecutionError(
+            f"NIRSpec/BOTS branch metadata mismatch for {path}: " + ", ".join(mismatches)
+        )
 
 
 def _tso3_product_name(selected: SelectedExposure) -> str:
     exposure_id = selected.exposure.exposure_id
     if not exposure_id:
         raise PipelineExecutionError("Cannot name a TSO3 association without an exposure identifier.")
-    return f"{exposure_id}_tso3"
+    detector = (
+        selected.exposure.detector
+        if mode_key(selected.exposure) == BOTS_MODE
+        else None
+    )
+    suffix = "" if detector is None else f"_{detector.lower()}"
+    return f"{exposure_id}{suffix}_tso3"
 
 
 def _association_record(
@@ -951,7 +1034,7 @@ def _workspace(config: WriteConfig) -> Workspace:
 def _selection_record(config: WriteConfig) -> dict[str, str]:
     """Stable, readable selector retained on every pipeline manifest entry."""
     selection = config.selection
-    return {
+    record = {
         "program_id": selection.program_id,
         "observation_id": selection.observation_id,
         "visit_number": selection.visit_number,
@@ -960,6 +1043,9 @@ def _selection_record(config: WriteConfig) -> dict[str, str]:
         "label": selection.label,
         "workspace_name": selection.workspace_name,
     }
+    if selection.detector is not None:
+        record["detector"] = selection.detector
+    return record
 
 
 def _download_record(result: DownloadResult) -> dict[str, Any]:

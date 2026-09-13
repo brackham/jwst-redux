@@ -294,7 +294,7 @@ def _print_plan(
     console.print(f"[bold]Reduction plan: {config.query.target}[/]")
     reduction_count = sum(len(plan.reductions) for plan in plans)
     console.print(
-        f"{_counted(len(plans), 'SOSS dataset')} containing "
+        f"{_counted(len(plans), _dataset_noun(result.datasets))} containing "
         f"{_counted(len(result.exposures), 'exposure')}; "
         + _counted(
             reduction_count,
@@ -319,7 +319,13 @@ def _print_plan(
         for branch_number, reduction_plan in enumerate(dataset_plan.reductions, start=1):
             _print_reduction_branch(branch_number, reduction_plan)
 
-    console.print(_product_summary(result.products, noun="_uncal archive input"))
+    planned_products = tuple(
+        product
+        for dataset_plan in plans
+        for reduction in dataset_plan.reductions
+        for product in reduction.archive_products
+    )
+    console.print(_product_summary(planned_products, noun="_uncal archive input"))
     console.print(
         "[dim]Plan only: no downloads, CRDS access, workspace creation, association writing, "
         "or pipeline execution occurred.[/]"
@@ -363,7 +369,7 @@ def _print_batch_summary(prepared: PreparedBatch) -> None:
     """Show all branch decisions before the first download or pipeline invocation."""
     console.print("[bold]Batch execution plan: planned endpoints[/]")
     console.print(
-        f"{_counted(len(prepared.plans), 'SOSS dataset')} containing "
+        f"{_counted(len(prepared.plans), _dataset_noun(prepared.discovery.datasets))} containing "
         f"{_counted(len(prepared.discovery.exposures), 'exposure')} and "
         f"{_counted(len(prepared.branches), 'execution branch')}."
     )
@@ -409,7 +415,7 @@ def _print_batch_result(result: BatchWorkflowResult) -> None:
 def _search_summary(result: DiscoveryResult) -> str:
     sizes = _size_summary(result.products)
     return (
-        f"Total: {_counted(len(result.datasets), 'SOSS dataset')} containing "
+        f"Total: {_counted(len(result.datasets), _dataset_noun(result.datasets))} containing "
         f"{_counted(len(result.exposures), 'exposure')} and "
         f"{_counted(len(result.products), '_uncal product')}, {sizes}"
     )
@@ -458,6 +464,17 @@ def _dataset_label(dataset: ScienceDataset) -> str:
     program_label = str(int(program)) if program.isdigit() else program
     proposal_type = str(dataset.exposures[0].metadata.get("proposal_type") or "Program").upper()
     return f"{proposal_type}-{program_label} Obs {observation} / Visit {visit}"
+
+
+def _dataset_noun(datasets: tuple[ScienceDataset, ...]) -> str:
+    if not datasets:
+        return "science dataset"
+    exposure = datasets[0].exposures[0]
+    labels = {
+        ("NIRISS", "NIS_SOSS"): "SOSS dataset",
+        ("NIRSPEC", "NRS_BRIGHTOBJ"): "BOTS dataset",
+    }
+    return labels.get((exposure.instrument, exposure.exposure_type), "science dataset")
 
 
 def _counted(count: int, singular: str, plural: str | None = None) -> str:

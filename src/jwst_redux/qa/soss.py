@@ -9,6 +9,7 @@ import numpy as np
 from matplotlib import colors
 
 from .common import (
+    F_LAMBDA_LABEL,
     Spectrum,
     channel_classification_label,
     elapsed_hours,
@@ -56,7 +57,9 @@ def spectroscopic_time_series_window(
     try:
         return wavelength_windows[order]
     except KeyError as error:
-        raise ValueError(f"No spectroscopic time-series wavelength window for SOSS order {order}.") from error
+        raise ValueError(
+            f"No spectroscopic time-series wavelength window for SOSS order {order}."
+        ) from error
 
 
 def select_spectroscopic_time_series_window(
@@ -101,7 +104,7 @@ def spectra_plot(
         axis.set(
             title=f"Order {order}",
             xlabel="Wavelength [µm]",
-            ylabel="Fλ [W m⁻² µm⁻¹]",
+            ylabel=F_LAMBDA_LABEL,
         )
         axis.legend(loc="upper right")
     fig.suptitle(title)
@@ -287,7 +290,9 @@ def plot_scatter_spectrum(
             axis.set_ylim(bottom=0, top=upper)
             clipped_count = int(np.count_nonzero(finite > upper))
             if clipped_count:
-                clipped_label = f"\nDisplay-clipped above {upper:.3g} ppt: {clipped_count}/{finite.size}"
+                clipped_label = (
+                    f"\nDisplay-clipped above {upper:.3g} ppt: {clipped_count}/{finite.size}"
+                )
         axis.set(
             title=f"Order {order}",
             xlabel="Wavelength [µm]",

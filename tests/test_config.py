@@ -54,6 +54,48 @@ def test_validate_selector_free_toi3884_batch_config() -> None:
     assert config.failure_policy == "continue"
 
 
+def test_validate_nirspec_batch_configs_without_soss_qa_settings() -> None:
+    root = Path(__file__).parents[1] / "configs"
+    g395m = load_batch_config(root / "toi3884-bots-g395m.yaml")
+    g395h = load_batch_config(root / "toi3884-bots-g395h.yaml")
+
+    assert (g395m.discovery.query.instrument, g395m.discovery.query.exposure_type) == (
+        "NIRSPEC",
+        "NRS_BRIGHTOBJ",
+    )
+    assert g395m.discovery.query.observation_id == "002"
+    assert g395h.discovery.query.proposal_ids == ("5799",)
+
+
+def test_nirspec_explicit_write_selection_requires_detector(tmp_path: Path) -> None:
+    config_path = tmp_path / "nirspec.yaml"
+    config_path.write_text(
+        """
+query:
+  target: target
+  instrument: NIRSPEC
+  exposure_type: NRS_BRIGHTOBJ
+products:
+  start_from: uncal
+pipeline:
+  stages: auto
+output:
+  root: ./work
+stage1:
+  selection:
+    program_id: 1
+    observation_id: 1
+    visit_number: 1
+    exposure_number: 00001
+    exposure_id: jw00001001001_00001_00001
+options: {}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="requires stage1.selection.detector"):
+        load_write_config(config_path)
+
+
 def test_reject_unimplemented_target_matching_strategy(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -10,6 +10,9 @@ from ..exceptions import ArchiveQueryError, ConfigurationError
 from ..models import Product
 
 _SEGMENT_PATTERN = re.compile(r"-seg(?P<number>\d{3})_[^/]+_[^/]+\.fits$", re.IGNORECASE)
+_NIRSPEC_DETECTOR_PATTERN = re.compile(
+    r"(?:-seg\d{3})?_(?P<detector>nrs[12])_[^/]+\.fits$", re.IGNORECASE
+)
 
 
 def normalize_products(records: Iterable[dict[str, Any]]) -> tuple[Product, ...]:
@@ -28,6 +31,7 @@ def normalize_products(records: Iterable[dict[str, Any]]) -> tuple[Product, ...]
                 suffix=_lower_text(record.get("file_suffix")),
                 access=_upper_text(record.get("access")),
                 segment_number=segment_number(filename),
+                detector=product_detector(record, filename),
                 metadata=dict(record),
             )
         )
@@ -55,6 +59,20 @@ def segment_number(filename: str) -> int | None:
     """Return the three-digit JWST segment number when present."""
     match = _SEGMENT_PATTERN.search(filename)
     return int(match.group("number")) if match else None
+
+
+def product_detector(record: dict[str, Any], filename: str) -> str | None:
+    """Return normalized product-level detector metadata.
+
+    The MAST product-list schema currently omits a detector column for JWST.
+    STScI's detector-bearing exposure-product name is therefore normalized once
+    at this archive boundary.  All downstream code uses ``Product.detector``.
+    """
+    explicit = _upper_text(record.get("detector"))
+    if explicit is not None:
+        return explicit
+    match = _NIRSPEC_DETECTOR_PATTERN.search(filename)
+    return match.group("detector").upper() if match else None
 
 
 def _required_text(record: dict[str, Any], field: str) -> str:

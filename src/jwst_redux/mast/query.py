@@ -31,6 +31,7 @@ JWST_SEARCH_COLUMNS = (
     "filter",
     "pupil",
     "grating",
+    "detector",
     "subarray",
     "date_obs",
     "expstart",
@@ -79,7 +80,18 @@ def discover(
     """Discover matching exposures and organize them without downloading."""
     archive = client or MastClient()
     records = archive.query_exposures(_mast_criteria(config), JWST_SEARCH_COLUMNS)
-    exposures = tuple(sorted(map(normalize_exposure, records), key=_exposure_sort_key))
+    normalized = map(normalize_exposure, records)
+    exposures = tuple(
+        sorted(
+            (
+                exposure
+                for exposure in normalized
+                if exposure.instrument == config.query.instrument
+                and exposure.exposure_type == config.query.exposure_type
+            ),
+            key=_exposure_sort_key,
+        )
+    )
     if not exposures:
         raise ArchiveQueryError("MAST returned no matching JWST exposure datasets.")
 
@@ -129,6 +141,9 @@ def normalize_exposure(record: dict[str, Any]) -> Exposure:
         visit_number=_identifier(record.get("visit"), width=3),
         is_tso=_boolean(record.get("tsovisit")),
         optical_elements=_text(record.get("opticalElements")),
+        detector=_upper_text(record.get("detector")),
+        grating=_nirspec_grating(record),
+        filter=_upper_text(record.get("filter")),
         subarray=_upper_text(record.get("subarray")),
         start_time=_text(record.get("date_obs")),
         duration_seconds=_float(record.get("duration")),
@@ -183,6 +198,24 @@ def _boolean(value: Any) -> bool | None:
     if normalized in {"f", "false", "0", "no"}:
         return False
     raise ArchiveQueryError(f"Unrecognized MAST boolean value: {value!r}")
+
+
+def _nirspec_grating(record: dict[str, Any]) -> str | None:
+    """Normalize the disperser from explicit or combined MAST optical metadata."""
+    explicit = _upper_text(record.get("grating"))
+    if explicit is not None:
+        return explicit
+    if _upper_text(record.get("instrume")) != "NIRSPEC":
+        return None
+    filter_name = _upper_text(record.get("filter"))
+    elements = (
+        _upper_text(element)
+        for element in str(record.get("opticalElements") or "").split(";")
+    )
+    return next(
+        (element for element in elements if element is not None and element != filter_name),
+        None,
+    )
 
 
 def _exposure_sort_key(exposure: Exposure) -> tuple[str, ...]:

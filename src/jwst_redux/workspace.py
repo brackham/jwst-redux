@@ -101,9 +101,14 @@ def _manifest_matches_selection(path: Path, selection: ExposureSelectionConfig) 
         "observation_id": selection.observation_id,
         "visit_number": selection.visit_number,
     }
+    expected_detector = selection.detector
     return any(
         isinstance(entry, dict)
         and entry.get("exposure_identifier") == selection.exposure_id
         and entry.get("scientific_dataset") == identity
+        and (
+            expected_detector is None
+            or entry.get("selection", {}).get("detector") == expected_detector
+        )
         for entry in entries
     )

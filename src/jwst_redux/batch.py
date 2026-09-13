@@ -85,7 +85,8 @@ def prepare_batch(
         for reduction in dataset_plan.reductions:
             endpoint = _endpoint(reduction)
             for exposure in reduction.group.exposures:
-                selection = _selection_for(dataset_plan.dataset, exposure)
+                detector = dict(reduction.group.compatibility).get("detector")
+                selection = _selection_for(dataset_plan.dataset, exposure, detector=detector)
                 write_config = write_config_for_exposure(config, selection)
                 stage_actions = tuple(
                     (stage.name, _stage_action(write_config, exposure, stage.name))
@@ -98,7 +99,10 @@ def prepare_batch(
                         exposure=exposure,
                         config=write_config,
                         endpoint=endpoint,
-                        segment_count=len(exposure.products),
+                        segment_count=sum(
+                            product.exposure_id == exposure.exposure_id
+                            for product in reduction.group.products
+                        ),
                         stage_actions=stage_actions,
                     )
                 )
@@ -146,7 +150,9 @@ def run_batch(
     return BatchWorkflowResult(execution, tuple(results))
 
 
-def _selection_for(dataset: ScienceDataset, exposure: Exposure) -> ExposureSelectionConfig:
+def _selection_for(
+    dataset: ScienceDataset, exposure: Exposure, *, detector: str | None = None
+) -> ExposureSelectionConfig:
     identity = dict(dataset.identity)
     if exposure.exposure_id is None:
         raise ValueError("Planned exposure has no exposure identifier.")
@@ -155,6 +161,7 @@ def _selection_for(dataset: ScienceDataset, exposure: Exposure) -> ExposureSelec
         observation_id=identity["observation_id"],
         visit_number=identity["visit_number"],
         exposure_id=exposure.exposure_id,
+        detector=detector,
     )
 
 

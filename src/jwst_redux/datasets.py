@@ -8,12 +8,12 @@ from dataclasses import replace
 
 from .exceptions import ArchiveQueryError
 from .models import Exposure, Product, ScienceDataset
+from .modes import SUPPORTED_MODES, mode_key
 
-# A scientific dataset boundary is observing-mode dependent.  NIRISS/SOSS time
-# series are identified by JWST program, observation, and visit number.  Future
-# modes should add their own explicit identity rule rather than inheriting this one.
+# A scientific dataset boundary is observing-mode dependent. Each supported mode
+# registers its identity fields explicitly rather than inheriting a universal rule.
 DATASET_IDENTITY_FIELDS_BY_MODE = {
-    ("NIRISS", "NIS_SOSS"): ("program_id", "observation_id", "visit_number"),
+    key: mode.dataset_identity_fields for key, mode in SUPPORTED_MODES.items()
 }
 
 
@@ -50,7 +50,7 @@ def build_science_datasets(exposures: Iterable[Exposure]) -> tuple[ScienceDatase
         tuple[tuple[str, str], tuple[tuple[str, str], ...]], list[Exposure]
     ] = defaultdict(list)
     for exposure in exposures:
-        mode = (exposure.instrument or "", exposure.exposure_type or "")
+        mode = mode_key(exposure)
         identity = _dataset_identity(exposure)
         grouped[(mode, identity)].append(exposure)
 

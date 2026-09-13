@@ -9,13 +9,21 @@ from typing import Any
 
 from ..config import WriteConfig
 from ..exceptions import JWSTReduxError
+from ..modes import BOTS_MODE, SOSS_MODE
 from ..provenance import ManifestStore, make_run_key, utc_now
 from ..workspace import Workspace
 from . import QA_SCHEMA_VERSION
+from . import nirspec as nirspec_qa
 from . import stage1 as stage1_qa
 from . import stage2 as stage2_qa
 from . import stage3 as stage3_qa
-from .common import SPECTROSCOPIC_TIME_SERIES_CONFIG, qa_subdirectory
+from .checks import write_extracted_spectrum_report
+from .common import (
+    F_LAMBDA_UNIT,
+    SPECTRAL_QA_CONFIG,
+    SPECTROSCOPIC_TIME_SERIES_CONFIG,
+    qa_subdirectory,
+)
 
 SOSS_CHANNEL_CLASSIFICATION: dict[str, str] = {
     "validity": (
@@ -95,7 +103,9 @@ def generate_qa(
     unknown = set(stages).difference({"stage1", "stage2", "stage3"})
     if unknown:
         raise JWSTReduxError(f"Unsupported QA stage(s): {', '.join(sorted(unknown))}")
-    workspace = Workspace.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
+    workspace = Workspace.existing_for_selection(
+        config.discovery.output_root.resolve(), config.selection
+    )
     if not workspace.manifest.is_file():
         raise JWSTReduxError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
@@ -271,13 +281,41 @@ def _plot(
 ) -> tuple[Path, ...]:
     if stage == "stage1":
         return stage1_qa.generate(inputs[0], output_dir)
-    if stage == "stage2":
-        return stage2_qa.generate(
-            inputs[0], output_dir, _wavelength_windows(plotting_parameters)
-        )
-    return stage3_qa.generate(
-        inputs[0], inputs[1], output_dir, _wavelength_windows(plotting_parameters)
+    mode = (
+        str(plotting_parameters["instrument"]),
+        str(plotting_parameters["exposure_type"]),
     )
+    if mode == BOTS_MODE:
+        plots = nirspec_qa.generate(
+            inputs[0],
+            output_dir,
+            stage=stage.replace("stage", "Stage "),
+            white_light_path=inputs[1] if stage == "stage3" else None,
+        )
+        report = write_extracted_spectrum_report(
+            inputs[0],
+            output_dir / "checks.json",
+            expected_instrument=mode[0],
+            expected_exposure_type=mode[1],
+            expected_detector=plotting_parameters.get("detector"),
+        )
+        return (*plots, report)
+    if mode != SOSS_MODE:
+        raise JWSTReduxError(f"No extracted-spectrum QA implementation for {mode[0]}/{mode[1]}.")
+    if stage == "stage2":
+        plots = stage2_qa.generate(inputs[0], output_dir, _wavelength_windows(plotting_parameters))
+    else:
+        plots = stage3_qa.generate(
+            inputs[0], inputs[1], output_dir, _wavelength_windows(plotting_parameters)
+        )
+    report = write_extracted_spectrum_report(
+        inputs[0],
+        output_dir / "checks.json",
+        expected_instrument=mode[0],
+        expected_exposure_type=mode[1],
+        expected_detector=None,
+    )
+    return (*plots, report)
 
 
 def _file_record(path: Path) -> dict[str, Any]:
@@ -285,28 +323,53 @@ def _file_record(path: Path) -> dict[str, Any]:
 
 
 def _qa_parameters(config: WriteConfig, stage: str) -> dict[str, Any]:
-    """Return stage QA provenance including configured SOSS display windows."""
+    """Return generic and mode-specific QA provenance."""
     parameters = dict(QA_PARAMETER_BASE[stage])
-    if stage in {"stage2", "stage3"}:
+    parameters.update(
+        {
+            "instrument": config.discovery.query.instrument,
+            "exposure_type": config.discovery.query.exposure_type,
+            "detector": config.selection.detector,
+            "absolute_spectrum_unit": F_LAMBDA_UNIT.to_string(),
+        }
+    )
+    mode = (config.discovery.query.instrument, config.discovery.query.exposure_type)
+    if stage in {"stage2", "stage3"} and mode == SOSS_MODE:
         time_series = dict(parameters["spectroscopic_time_series"])
         time_series["wavelength_windows_microns"] = {
             str(order): list(window)
             for order, window in sorted(config.soss_wavelength_windows.items())
         }
         parameters["spectroscopic_time_series"] = time_series
+    if stage in {"stage2", "stage3"} and mode == BOTS_MODE:
+        parameters.pop("soss_channel_classification", None)
+        parameters["spectral_qa_mask"] = SPECTRAL_QA_CONFIG.as_provenance()
+        parameters["white_light"] = {
+            "primary": (
+                "median across QA-valid channels after normalization by each channel's "
+                "temporal median; plotted as 1000 * (relative_flux - 1) ppt"
+            ),
+            "official_comparison": (
+                "JWST WhiteLightStep wavelength sum, shown separately with an independent scale"
+                if stage == "stage3"
+                else "not available before TSO3"
+            ),
+        }
     return parameters
 
 
 def _wavelength_windows(plotting_parameters: dict[str, Any]) -> dict[int, tuple[float, float]]:
     """Recover validated display windows from the recorded plotting parameters."""
     configured = plotting_parameters["spectroscopic_time_series"]["wavelength_windows_microns"]
-    return {int(order): (float(bounds[0]), float(bounds[1])) for order, bounds in configured.items()}
+    return {
+        int(order): (float(bounds[0]), float(bounds[1])) for order, bounds in configured.items()
+    }
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:
     """Match QA candidates to the complete selected exposure identity."""
     selection = config.selection
-    return {
+    record = {
         "program_id": selection.program_id,
         "observation_id": selection.observation_id,
         "visit_number": selection.visit_number,
@@ -315,6 +378,9 @@ def _selection_record(config: WriteConfig) -> dict[str, str]:
         "label": selection.label,
         "workspace_name": selection.workspace_name,
     }
+    if selection.detector is not None:
+        record["detector"] = selection.detector
+    return record
 
 
 def _set_pipeline_qa_status(

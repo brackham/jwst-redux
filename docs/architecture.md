@@ -26,12 +26,13 @@ Scientific dataset
     -> one or more compatible ReductionGroups
 ```
 
-Scientific dataset identity is observing-mode dependent. For NIRISS/SOSS, it is derived from the
-JWST program, observation, and visit-number metadata. Future modes must define their own explicit
-identity rule; `visit_id` is not a universal grouping key. Within a dataset, reduction compatibility
-is determined from the relevant observation, target, mode, TSO, optical-path, and pipeline-path
-metadata. When association creation is implemented, use an appropriate official archived association
-or the official `jwst.associations` machinery rather than defining a custom association format.
+Scientific dataset identity is observing-mode dependent. NIRISS/SOSS and NIRSpec/BOTS both use the
+JWST program, observation, and visit-number metadata through separately registered mode profiles;
+`visit_id` is not a universal grouping key. Within a dataset, generic TSO compatibility uses the
+observation, target, instrument, exposure type, TSO state, and pipeline path. SOSS adds its optical
+elements and subarray. BOTS adds detector, grating, filter, and subarray. A detector-spanning BOTS
+exposure is consequently represented by separate reduction branches rather than an association that
+mixes NRS1 and NRS2 products.
 
 ### `pipeline/`
 Runs the selected `jwst` Pipeline classes with standard defaults plus explicit user overrides. The
@@ -39,10 +40,12 @@ implemented write path selects one explicit scientific dataset/exposure, validat
 starting-product segment set, and runs its products sequentially through `Detector1Pipeline` and
 `Spec2Pipeline`. Resume is per segment. Stage 2 input is resolved from the intact output record of a
 successful Stage 1 manifest entry, preserving the provenance link rather than reconstructing a
-filename. For this TSO/SOSS mode, `_calints` is the TSO3 association input while `_x1dints` is a
+filename. For these spectroscopic TSO modes, `_calints` is the TSO3 association input while `_x1dints` is a
 per-exposure extracted product. Stage 3 resolves one intact `_calints` record per expected selected
 segment, constructs a schema-validated official Level-3 association with `jwst.associations`, and
-runs `Tso3Pipeline` once. Its resume key includes association content, all member paths, and upstream
+runs `Tso3Pipeline` once per exposure/detector branch. Local BOTS FITS metadata is checked against the
+planned instrument, exposure type, detector, grating, filter, and subarray before execution and
+association construction. Its resume key includes association content, all member paths, and upstream
 Stage-2 run IDs; actual TSO3 outputs are captured rather than assumed.
 
 ### Batch orchestration
@@ -59,8 +62,9 @@ end, and lets the next invocation resume incomplete work.
 ### `workspace.py`
 Defines where raw, Stage 1, Stage 2, Stage 3, Stage-3 associations, logs, and manifests live. Each
 write workspace is rooted below `output.root` by the complete explicit selector (program, observation,
-visit, exposure number, and exposure ID), preventing selected visits from sharing products, manifests,
-logs, QA, or associations. It is created only by write commands; search and plan never instantiate it.
+visit, exposure number, exposure ID, and detector when applicable), preventing selected branches from
+sharing products, manifests, logs, QA, or associations. It is created only by write commands; search
+and plan never instantiate it.
 CRDS cache files remain external infrastructure.
 
 ### `qa/`
@@ -87,6 +91,17 @@ noisy but mathematically valid channels. Configured per-order wavelength windows
 extent independently of either classification. These values are captured in QA provenance and do not alter FITS
 products.
 
+NIRSpec/BOTS Stage 2 and Stage 3 use a detector-aware QA implementation. It labels products by
+NRS1/NRS2 and grating/filter, plots the native wavelength grid without interpolation, and records a
+machine-readable `checks.json`. Shared checks cover output existence, JWST datamodel readability,
+integration counts, finite extracted flux and wavelength samples, monotonic wavelength solutions,
+and observed coverage. Absolute spectra use wavelength-dependent Astropy spectral-density
+equivalencies to produce cgs Fλ. A shared QA-valid channel mask combines finite/DQ-usable coverage,
+a finite nonzero temporal median, and conservative robust ensemble tests for catastrophic flux or
+variability outliers. The NIRSpec common-mode proxy is the median of channel-normalized flux in ppt;
+the official JWST wavelength sum is retained as a separately scaled diagnostic. Mask counts and a
+small set of rejected-channel metrics are persisted in `checks.json`.
+
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
 manifest. Pipeline entries also capture the resolved parameter configuration and warning/error
@@ -96,7 +111,7 @@ outputs; downstream stages explicitly reference the successful upstream run.
 ## Non-goals for the first release
 
 - Custom 1/f corrections
-- Alternative SOSS extraction
+- Alternative SOSS or BOTS extraction
 - Transit fitting
 - Light-curve analysis
 - Stellar contamination correction

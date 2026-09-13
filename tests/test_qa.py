@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from astropy.io import fits
 from astropy.table import Table
 from typer.testing import CliRunner
@@ -18,16 +19,20 @@ from jwst_redux.config import (
 from jwst_redux.provenance import ManifestStore
 from jwst_redux.qa import soss
 from jwst_redux.qa.common import (
+    F_LAMBDA_LABEL,
     QA_SCHEMA_VERSION,
     SPECTROSCOPIC_TIME_SERIES_CONFIG,
     Spectrum,
     channel_classification_label,
     flux_to_f_lambda,
+    native_spectral_stack,
     point_to_point_difference_ppt,
+    qa_common_mode_ppt,
     relative_flux_ppt,
     relative_scatter_ppt,
     robust_ppt_limit,
     spectra_from_x1dints,
+    spectral_qa_selection,
     spectroscopic_time_series_display,
     spectroscopic_time_series_science_quality_mask,
     spectroscopic_time_series_validity_mask,
@@ -221,8 +226,11 @@ def test_white_light_plot_has_combined_and_fixed_order_panels(monkeypatch, tmp_p
 
 def test_f_lambda_conversion_and_spectroscopic_time_series_guardrails() -> None:
     """F_nu conversion and display clipping preserve their physical definitions."""
-    converted = flux_to_f_lambda(np.array([1.0]), np.array([1.0]), "Jy")
-    assert np.allclose(converted, [2.99792458e-12], rtol=1e-7)
+    converted = flux_to_f_lambda(np.array([1.0, 1.0]), np.array([1.0, 2.0]), "Jy")
+    assert np.allclose(converted, [2.99792458e-13, 7.49481145e-14], rtol=1e-7)
+    assert F_LAMBDA_LABEL == "Fλ [erg s⁻¹ cm⁻² Å⁻¹]"
+    with pytest.raises(ValueError, match="not a supported spectral flux-density unit"):
+        flux_to_f_lambda(np.array([1.0]), np.array([1.0]), "electron / s")
 
     flux = np.array(
         [
@@ -249,11 +257,37 @@ def test_f_lambda_conversion_and_spectroscopic_time_series_guardrails() -> None:
     assert np.allclose(spectroscopic_time_series_colormap().get_bad()[:3], [0.82, 0.82, 0.82])
 
 
+def test_shared_spectral_qa_mask_handles_outliers_missing_samples_and_dq() -> None:
+    integrations = 20
+    wavelength = np.linspace(2.8, 5.2, 8)
+    common_mode = np.ones(integrations)
+    common_mode[8:12] = 0.98
+    baseline = np.linspace(1.0, 1.2, wavelength.size)
+    flux = common_mode[:, None] * baseline[None, :]
+    flux[:, -2] = 1e6 * (1 + 0.5 * np.sin(np.arange(integrations)))
+    flux[:4, 1] = np.nan
+    dq = np.zeros_like(flux, dtype=np.uint32)
+    dq[:, 0] = 1
+    spectra = [
+        Spectrum(1, index + 1, 60_000 + index / 1000, wavelength, row, dq[index])
+        for index, row in enumerate(flux)
+    ]
+
+    stack = native_spectral_stack(spectra)
+    assert stack is not None
+    selection = spectral_qa_selection(*stack)
+
+    assert selection.valid_channels.tolist() == [False, False, True, True, True, True, False, True]
+    assert selection.finite_fraction[0] == 0
+    assert selection.finite_fraction[1] == pytest.approx(0.8)
+    assert "representative_flux_outlier" in selection.rejection_reasons[-2]
+    assert "temporal_variability_outlier" in selection.rejection_reasons[-2]
+    assert np.allclose(qa_common_mode_ppt(selection), 1e3 * (common_mode - 1))
+
+
 def test_spectroscopic_time_series_window_is_independent_of_quality_mask() -> None:
     wavelength = np.array([0.65, 0.70, 0.80, 0.90, 1.00])
-    flux = np.array(
-        [[10.0, 10.0, 0.1, 10.0, 10.0], [10.0, 10.0, 0.1, 10.0, 10.0]]
-    )
+    flux = np.array([[10.0, 10.0, 0.1, 10.0, 10.0], [10.0, 10.0, 0.1, 10.0, 10.0]])
     window = spectroscopic_time_series_window(3, DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     selected_wavelength, selected_flux = select_spectroscopic_time_series_window(
         wavelength, flux, window
@@ -270,9 +304,7 @@ def test_spectroscopic_time_series_window_is_independent_of_quality_mask() -> No
 
 
 def test_scatter_and_point_to_point_quantities_mask_invalid_channels_and_use_ppt() -> None:
-    flux = np.array(
-        [[10.0, 10.0, np.nan], [12.0, 8.0, np.nan], [14.0, 10.0, np.nan]]
-    )
+    flux = np.array([[10.0, 10.0, np.nan], [12.0, 8.0, np.nan], [14.0, 10.0, np.nan]])
     valid = np.array([True, True, False])
 
     scatter = relative_scatter_ppt(flux, valid)
@@ -419,14 +451,13 @@ def test_soss_qa_regenerates_new_outputs_from_local_pipeline_products_only(tmp_p
             "spectroscopic_time_series.png",
             "scatter_spectrum.png",
             "point_to_point_difference.png",
+            "checks.json",
         }
     assert manifest.entry("stage2-local") is not None
     assert manifest.entry("stage2-local")["status"] == "success"
     assert manifest.entry("stage3-local") is not None
     assert manifest.entry("stage3-local")["status"] == "success"
-    classification = results[0].manifest_entry["plotting_parameters"][
-        "soss_channel_classification"
-    ]
+    classification = results[0].manifest_entry["plotting_parameters"]["soss_channel_classification"]
     assert "not the default display mask" in classification["science_quality"]
 
 

@@ -11,7 +11,8 @@ It should **not** reimplement JWST calibration algorithms. Its job is to make th
 
 fast, repeatable, resumable, and easy to apply to another JWST dataset.
 
-The first end-to-end example will be all archival NIRISS/SOSS observations of TOI-3884.
+The package supports the standard official time-series paths for NIRISS/SOSS and NIRSpec/BOTS.
+The first validated science target is TOI-3884.
 
 Discovery and planning remain read-only:
 
@@ -82,6 +83,31 @@ planned path, and a local run/resume assessment. Execution is sequential. The de
 `options.batch_failure_policy: continue` attempts later independent branches after a failure, records
 that failure in the branch manifest, returns nonzero after the batch, and lets a later invocation
 resume only incomplete work. Set the policy to `stop` to leave later branches untouched.
+
+NIRSpec/BOTS uses the same planner, runners, manifests, and resume behavior. Medium-resolution and
+PRISM BOTS spectra are planned on NRS1; high-resolution configurations whose useful spectrum spans
+the detector gap are split into independent NRS1 and NRS2 branches. Detector, grating, filter, and
+subarray are part of branch compatibility, and detector identity is also part of each write
+workspace and TSO3 product name. The two TOI-3884 acceptance plans are:
+
+```bash
+jwst-redux plan configs/toi3884-bots-g395m.yaml
+jwst-redux plan configs/toi3884-bots-g395h.yaml
+```
+
+Run the first, single-science-detector acceptance case with:
+
+```bash
+jwst-redux run configs/toi3884-bots-g395m.yaml --all
+```
+
+BOTS Stage 2/3 QA uses native detector wavelength grids and records `checks.json` beside the plots.
+Absolute spectra are converted from their declared JWST units to cgs Fλ. A conservative shared mask
+rejects channels with inadequate finite/DQ-usable coverage or catastrophic robust ensemble outlier
+statistics. The white-light QA product is a median of channel-normalized valid flux in ppt; for
+Stage 3, the official JWST WhiteLightStep wavelength sum is shown separately on its own scale.
+Mask counts and a few representative rejected channels are recorded without changing calibrated
+products.
 
 The remaining workflow commands are scaffolded:
 

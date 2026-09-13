@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TypeVar
 
 from .config import ExposureSelectionConfig
 from .exceptions import SelectionError
 from .models import ScienceDataset, SelectedExposure, SelectedProduct
+from .modes import BOTS_MODE, mode_key, nirspec_bots_detectors
 from .planning.associations import validate_exposure_segments
 
 T = TypeVar("T")
@@ -39,16 +41,53 @@ def select_exposure(
         {"exposure_id": selection.exposure_id, "dataset_id": dataset.dataset_id},
     )
 
+    detector = selection.detector
+    if mode_key(exposure) == BOTS_MODE:
+        applicable = nirspec_bots_detectors(exposure)
+        if detector is None:
+            if len(applicable) != 1:
+                raise SelectionError(
+                    "NIRSpec/BOTS selection must specify detector when the configuration uses "
+                    f"multiple science detectors: {', '.join(applicable)}."
+                )
+            detector = applicable[0]
+        if detector not in applicable:
+            raise SelectionError(
+                f"Detector {detector} is not a science branch for "
+                f"{exposure.grating}/{exposure.filter}; expected {', '.join(applicable)}."
+            )
+
     products = tuple(
         sorted(
-            (product for product in exposure.products if product.suffix == "_uncal"),
+            (
+                product
+                for product in exposure.products
+                if product.suffix == "_uncal"
+                and (
+                    detector is None
+                    or (product.detector or exposure.detector) == detector
+                )
+            ),
             key=lambda product: (product.segment_number or 0, product.filename),
         )
     )
     if not products:
-        raise SelectionError(f"Selected exposure {exposure.exposure_id} has no _uncal products.")
+        detector_note = "" if detector is None else f" for detector {detector}"
+        raise SelectionError(
+            f"Selected exposure {exposure.exposure_id} has no _uncal products{detector_note}."
+        )
+    if detector is not None:
+        products = tuple(
+            product if product.detector is not None else replace(product, detector=detector)
+            for product in products
+        )
     validate_exposure_segments(exposure, products)
-    return SelectedExposure(dataset=dataset, exposure=exposure, products=products)
+    selected_exposure = (
+        replace(exposure, detector=detector, products=products)
+        if detector is not None
+        else exposure
+    )
+    return SelectedExposure(dataset=dataset, exposure=selected_exposure, products=products)
 
 
 def select_stage1_product(

@@ -50,6 +50,7 @@ class ExposureSelectionConfig:
     visit_number: str
     exposure_id: str
     exposure_number: str | None = None
+    detector: str | None = None
 
     @property
     def resolved_exposure_number(self) -> str:
@@ -63,19 +64,21 @@ class ExposureSelectionConfig:
     def label(self) -> str:
         """Human-readable identity for command output and provenance."""
         program = str(int(self.program_id)) if self.program_id.isdigit() else self.program_id
-        return (
+        label = (
             f"GO-{program} Obs {self.observation_id} / Visit {self.visit_number} "
             f"/ Exposure {self.resolved_exposure_number}"
         )
+        return label if self.detector is None else f"{label} / Detector {self.detector}"
 
     @property
     def workspace_name(self) -> str:
         """Stable directory name unique to this complete selected exposure."""
-        return (
+        name = (
             f"go-{int(self.program_id):04d}-obs-{self.observation_id}"
             f"-visit-{self.visit_number}-exposure-{self.resolved_exposure_number}"
             f"-{self.exposure_id}"
         )
+        return name if self.detector is None else f"{name}-detector-{self.detector.lower()}"
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,11 @@ def load_write_config(path: str | Path) -> WriteConfig:
 
     exposure_id = _required_string(selection, "exposure_id")
     exposure_number = _required_identifier(selection, "exposure_number", width=5)
+    detector = _optional_upper_string(selection.get("detector"))
+    if discovery.query.instrument == "NIRSPEC" and detector not in {"NRS1", "NRS2"}:
+        raise ConfigurationError(
+            "NIRSpec write configuration requires stage1.selection.detector to be NRS1 or NRS2."
+        )
     if _exposure_number_from_id(exposure_id) != exposure_number:
         raise ConfigurationError(
             "Configuration field 'stage1.selection.exposure_number' must match the "
@@ -210,6 +218,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
             visit_number=_required_identifier(selection, "visit_number", width=3),
             exposure_id=exposure_id,
             exposure_number=exposure_number,
+            detector=detector,
         ),
         crds_context=str(pipeline.get("crds_context", "auto")).strip().lower(),
         parameter_overrides=dict(overrides),
@@ -314,6 +323,11 @@ def _optional_identifier(value: Any) -> str | None:
     if not text:
         raise ConfigurationError("Optional archive identifiers cannot be empty strings.")
     return text
+
+
+def _optional_upper_string(value: Any) -> str | None:
+    text = _optional_identifier(value)
+    return text.upper() if text is not None else None
 
 
 def _required_identifier(data: dict[str, Any], key: str, *, width: int) -> str:

@@ -25,10 +25,11 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 
-QA_SCHEMA_VERSION = "9"
+QA_SCHEMA_VERSION = "11"
 PLOT_DPI = 180
 MAD_TO_SIGMA = 1.4826
-F_LAMBDA_UNIT = u.W / u.m**2 / u.um
+F_LAMBDA_UNIT = u.erg / u.s / u.cm**2 / u.AA
+F_LAMBDA_LABEL = "Fλ [erg s⁻¹ cm⁻² Å⁻¹]"
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,35 @@ SPECTROSCOPIC_TIME_SERIES_CONFIG = SpectroscopicTimeSeriesConfig()
 
 
 @dataclass(frozen=True)
+class SpectralQAConfig:
+    """Conservative, instrument-independent channel-selection parameters.
+
+    The two outlier floors keep a narrow but legitimate spectral feature from
+    being rejected merely because the surrounding spectrum is very smooth.
+    Both tests operate on ratios to robust ensemble levels, never on an
+    absolute flux or wavelength cutoff.
+    """
+
+    finite_fraction_min: float = 0.9
+    robust_sigma: float = 12.0
+    representative_flux_ratio_min: float = 1_000.0
+    temporal_scatter_ratio_min: float = 30.0
+    rejected_example_limit: int = 5
+
+    def as_provenance(self) -> dict[str, float | int]:
+        return {
+            "finite_fraction_min": self.finite_fraction_min,
+            "robust_sigma": self.robust_sigma,
+            "representative_flux_ratio_min": self.representative_flux_ratio_min,
+            "temporal_scatter_ratio_min": self.temporal_scatter_ratio_min,
+            "rejected_example_limit": self.rejected_example_limit,
+        }
+
+
+SPECTRAL_QA_CONFIG = SpectralQAConfig()
+
+
+@dataclass(frozen=True)
 class Spectrum:
     """One extracted integration, retaining its native wavelength grid."""
 
@@ -80,6 +110,79 @@ class Spectrum:
     wavelength: np.ndarray
     flux: np.ndarray
     dq: np.ndarray | None
+
+
+@dataclass(frozen=True)
+class SpectralQASelection:
+    """A native-grid flux stack and its reusable QA-valid channel mask."""
+
+    wavelength: np.ndarray
+    flux: np.ndarray
+    valid_channels: np.ndarray
+    finite_fraction: np.ndarray
+    representative_flux: np.ndarray
+    temporal_scatter_ppt: np.ndarray
+    representative_flux_ratio: np.ndarray
+    temporal_scatter_ratio: np.ndarray
+    rejection_reasons: tuple[tuple[str, ...], ...]
+
+    @property
+    def accepted_count(self) -> int:
+        return int(np.count_nonzero(self.valid_channels))
+
+    @property
+    def rejected_count(self) -> int:
+        return int(self.valid_channels.size - self.accepted_count)
+
+    def masked_flux(self) -> np.ndarray:
+        """Return a copy with rejected wavelength channels represented as NaN."""
+        result = self.flux.copy()
+        result[:, ~self.valid_channels] = np.nan
+        return result
+
+    def diagnostics(self, config: SpectralQAConfig = SPECTRAL_QA_CONFIG) -> dict[str, Any]:
+        """Return compact counts and the most extreme rejected channels."""
+        severity = np.fmax(
+            np.nan_to_num(
+                self.representative_flux_ratio / config.representative_flux_ratio_min,
+                nan=0.0,
+                posinf=np.inf,
+            ),
+            np.nan_to_num(
+                self.temporal_scatter_ratio / config.temporal_scatter_ratio_min,
+                nan=0.0,
+                posinf=np.inf,
+            ),
+        )
+        rejected = np.flatnonzero(~self.valid_channels)
+        ranked = rejected[np.argsort(severity[rejected])[::-1]]
+        examples = []
+        for index in ranked[: config.rejected_example_limit]:
+            examples.append(
+                {
+                    "index": int(index),
+                    "wavelength_microns": _finite_float(self.wavelength[index]),
+                    "finite_fraction": float(self.finite_fraction[index]),
+                    "representative_flux_native": _finite_float(self.representative_flux[index]),
+                    "representative_flux_ratio": _finite_float(
+                        self.representative_flux_ratio[index]
+                    ),
+                    "temporal_scatter_ppt": _finite_float(self.temporal_scatter_ppt[index]),
+                    "temporal_scatter_ratio": _finite_float(self.temporal_scatter_ratio[index]),
+                    "reasons": list(self.rejection_reasons[index]),
+                }
+            )
+        reason_counts: dict[str, int] = defaultdict(int)
+        for reasons in self.rejection_reasons:
+            for reason in reasons:
+                reason_counts[reason] += 1
+        return {
+            "total_wavelength_bins": int(self.valid_channels.size),
+            "accepted_for_qa": self.accepted_count,
+            "rejected": self.rejected_count,
+            "rejection_reason_counts": dict(sorted(reason_counts.items())),
+            "most_extreme_rejected_bins": examples,
+        }
 
 
 def qa_subdirectory(root: Path, product: Path) -> Path:
@@ -117,6 +220,138 @@ def valid_flux(spectrum: Spectrum) -> np.ndarray:
     if spectrum.dq is not None and spectrum.dq.shape == spectrum.flux.shape:
         valid &= spectrum.dq == 0
     return valid
+
+
+def native_spectral_stack(
+    spectra: list[Spectrum],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Stack integrations on their shared native grid with unusable samples masked."""
+    if not spectra:
+        return None
+    reference = spectra[0].wavelength
+    if not all(
+        item.wavelength.shape == reference.shape
+        and np.allclose(item.wavelength, reference, equal_nan=True, rtol=1e-7, atol=0)
+        for item in spectra
+    ):
+        return None
+    flux = np.vstack([np.where(valid_flux(item), item.flux, np.nan) for item in spectra])
+    return reference.copy(), flux
+
+
+def spectral_qa_selection(
+    wavelength: np.ndarray,
+    flux: np.ndarray,
+    config: SpectralQAConfig = SPECTRAL_QA_CONFIG,
+) -> SpectralQASelection:
+    """Select channels suitable for absolute-spectrum and common-mode QA.
+
+    Inputs are a one-dimensional wavelength grid in microns and a flux array
+    shaped ``(integration, wavelength)``. DQ-unusable samples must already be
+    NaN, as produced by :func:`native_spectral_stack`. The mask first requires
+    finite wavelength, adequate finite sample coverage, and a finite non-zero
+    temporal median. It then rejects only extreme upper outliers relative to
+    robust ensemble distributions of representative flux and temporal scatter.
+    """
+    wave = np.asarray(wavelength, dtype=float)
+    values = np.asarray(flux, dtype=float)
+    if values.ndim != 2 or wave.ndim != 1 or values.shape[1] != wave.size:
+        raise ValueError(
+            "Spectral QA requires wavelength shape (channel,) and flux shape "
+            f"(integration, channel); got {wave.shape} and {values.shape}."
+        )
+
+    finite_fraction = np.mean(np.isfinite(values), axis=0)
+    representative = np.asarray(finite_median(values, axis=0), dtype=float)
+    scatter = relative_scatter_ppt(values)
+    base_valid = (
+        np.isfinite(wave)
+        & (finite_fraction >= config.finite_fraction_min)
+        & np.isfinite(representative)
+        & (representative != 0)
+    )
+
+    amplitude_ratio, amplitude_outlier = _robust_upper_ratio_outliers(
+        np.abs(representative),
+        base_valid,
+        robust_sigma=config.robust_sigma,
+        minimum_ratio=config.representative_flux_ratio_min,
+        offset=0.0,
+    )
+    scatter_ratio, scatter_outlier = _robust_upper_ratio_outliers(
+        scatter,
+        base_valid,
+        robust_sigma=config.robust_sigma,
+        minimum_ratio=config.temporal_scatter_ratio_min,
+        offset=1.0,
+    )
+    valid = base_valid & ~amplitude_outlier & ~scatter_outlier
+
+    reasons: list[tuple[str, ...]] = []
+    for index in range(wave.size):
+        channel_reasons = []
+        if not np.isfinite(wave[index]):
+            channel_reasons.append("nonfinite_wavelength")
+        if finite_fraction[index] < config.finite_fraction_min:
+            channel_reasons.append("insufficient_finite_or_dq_usable_flux")
+        if not np.isfinite(representative[index]):
+            channel_reasons.append("nonfinite_representative_flux")
+        elif representative[index] == 0:
+            channel_reasons.append("zero_representative_flux")
+        if amplitude_outlier[index]:
+            channel_reasons.append("representative_flux_outlier")
+        if scatter_outlier[index]:
+            channel_reasons.append("temporal_variability_outlier")
+        reasons.append(tuple(channel_reasons))
+
+    return SpectralQASelection(
+        wavelength=wave,
+        flux=values,
+        valid_channels=valid,
+        finite_fraction=finite_fraction,
+        representative_flux=representative,
+        temporal_scatter_ppt=scatter,
+        representative_flux_ratio=amplitude_ratio,
+        temporal_scatter_ratio=scatter_ratio,
+        rejection_reasons=tuple(reasons),
+    )
+
+
+def qa_common_mode_ppt(selection: SpectralQASelection) -> np.ndarray:
+    """Combine channel-normalized valid fluxes into a robust QA common mode."""
+    valid = selection.valid_channels
+    if not np.any(valid):
+        raise ValueError("No wavelength channels passed the spectral QA mask.")
+    flux = selection.flux[:, valid]
+    representative = selection.representative_flux[valid]
+    relative = flux / representative[None, :]
+    return 1e3 * (np.asarray(finite_median(relative, axis=1), dtype=float) - 1.0)
+
+
+def _robust_upper_ratio_outliers(
+    values: np.ndarray,
+    candidate: np.ndarray,
+    *,
+    robust_sigma: float,
+    minimum_ratio: float,
+    offset: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flag conservative upper outliers in a positive ensemble distribution."""
+    metric = np.asarray(values, dtype=float)
+    usable = np.asarray(candidate, dtype=bool) & np.isfinite(metric) & (metric >= 0)
+    ratio = np.full(metric.shape, np.nan, dtype=float)
+    outlier = np.zeros(metric.shape, dtype=bool)
+    if not np.any(usable):
+        return ratio, outlier
+
+    transformed = np.full(metric.shape, np.nan, dtype=float)
+    transformed[usable] = np.log10(metric[usable] + offset)
+    center = float(finite_median(transformed[usable]))
+    spread = MAD_TO_SIGMA * float(finite_median(np.abs(transformed[usable] - center)))
+    threshold_delta = max(robust_sigma * spread, np.log10(minimum_ratio))
+    outlier[usable] = transformed[usable] - center > threshold_delta
+    ratio[usable] = 10.0 ** (transformed[usable] - center)
+    return ratio, outlier
 
 
 def elapsed_hours(spectra: list[Spectrum]) -> np.ndarray:
@@ -277,7 +512,9 @@ def channel_classification_label(
     valid = np.asarray(valid_channels, dtype=bool)
     science_quality = np.asarray(science_quality_channels, dtype=bool)
     if valid.shape != science_quality.shape:
-        raise ValueError("Validity and science-quality masks must have matching wavelength dimensions.")
+        raise ValueError(
+            "Validity and science-quality masks must have matching wavelength dimensions."
+        )
     science_quality = science_quality & valid
     valid_count = int(np.count_nonzero(valid))
     science_quality_count = int(np.count_nonzero(science_quality))
@@ -292,16 +529,25 @@ def channel_classification_label(
 def flux_to_f_lambda(
     flux: np.ndarray, wavelength_microns: np.ndarray, flux_unit: str
 ) -> np.ndarray:
-    """Convert native spectral-density samples to display-only F_lambda values.
+    """Convert native spectral-density samples to cgs F_lambda values.
 
     The wavelength grid is already normalized to microns by
     :func:`spectra_from_x1dints`; Astropy's spectral-density equivalency applies
     the wavelength-dependent F_nu <-> F_lambda relation correctly.
     """
-    source_unit = u.Unit(flux_unit)
+    try:
+        source_unit = u.Unit(flux_unit)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Unknown extracted-spectrum flux unit {flux_unit!r}.") from error
     wavelength = u.Quantity(wavelength_microns, u.um, copy=False)
     values = u.Quantity(flux, source_unit, copy=False)
-    return values.to_value(F_LAMBDA_UNIT, equivalencies=u.spectral_density(wavelength))
+    try:
+        return values.to_value(F_LAMBDA_UNIT, equivalencies=u.spectral_density(wavelength))
+    except u.UnitConversionError as error:
+        raise ValueError(
+            f"Extracted-spectrum flux unit {flux_unit!r} is not a supported spectral "
+            f"flux-density unit convertible to {F_LAMBDA_UNIT}."
+        ) from error
 
 
 def product_title(header: fits.Header, suffix: str = "") -> str:
@@ -317,10 +563,11 @@ def product_title(header: fits.Header, suffix: str = "") -> str:
 def spectra_from_x1dints(
     path: Path,
 ) -> tuple[dict[int, list[Spectrum]], fits.Header, str, str]:
-    """Read all EXTRACT1D table rows grouped by SOSS order.
+    """Read all EXTRACT1D table rows grouped by spectral order.
 
     A combined TSO3 product has one EXTRACT1D HDU per segment/order, so every
-    table row is deliberately represented as an integration here.
+    table row is deliberately represented as an integration here. NIRSpec/BOTS
+    products without an explicit order keyword are their single spectral order.
     """
     groups: dict[int, list[Spectrum]] = defaultdict(list)
     with fits.open(path, memmap=True) as hdul:
@@ -358,6 +605,8 @@ def spectra_from_x1dints(
             header_order = hdu.header.get(
                 "SPORDER", hdu.header.get("SPECTORD", hdu.header.get("ORDER"))
             )
+            if header_order is None and header.get("EXP_TYPE") == "NRS_BRIGHTOBJ":
+                header_order = 1
             flux_unit = flux_unit or (hdu.columns[flux_name].unit or "")
             wavelength_unit = wavelength_unit or (hdu.columns[wave_name].unit or "")
             for row in hdu.data:
@@ -400,6 +649,15 @@ def _scalar_int(value: Any) -> int | None:
 def _scalar_float(value: Any) -> float | None:
     try:
         result = float(np.asarray(value).item())
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
+
+
+def _finite_float(value: Any) -> float | None:
+    """Return a JSON-safe finite float or ``None``."""
+    try:
+        result = float(value)
     except (TypeError, ValueError):
         return None
     return result if np.isfinite(result) else None

@@ -22,6 +22,9 @@ class Exposure:
     visit_number: str | None = None
     is_tso: bool | None = None
     optical_elements: str | None = None
+    detector: str | None = None
+    grating: str | None = None
+    filter: str | None = None
     subarray: str | None = None
     start_time: str | None = None
     duration_seconds: float | None = None
@@ -44,6 +47,7 @@ class Product:
     suffix: str | None = None
     access: str | None = None
     segment_number: int | None = None
+    detector: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
