@@ -46,9 +46,9 @@ def attach_products(
 
 def build_science_datasets(exposures: Iterable[Exposure]) -> tuple[ScienceDataset, ...]:
     """Aggregate exposure records using the identity rule for their observing mode."""
-    grouped: dict[
-        tuple[tuple[str, str], tuple[tuple[str, str], ...]], list[Exposure]
-    ] = defaultdict(list)
+    grouped: dict[tuple[tuple[str, str], tuple[tuple[str, str], ...]], list[Exposure]] = (
+        defaultdict(list)
+    )
     for exposure in exposures:
         mode = mode_key(exposure)
         identity = _dataset_identity(exposure)

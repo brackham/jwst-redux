@@ -9,8 +9,16 @@ description = "A thin orchestration layer for retrieving JWST data from MAST and
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   {name = "Benjamin V. Rackham"}
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Astronomy",
 ]
 dependencies = [
   "astroquery",
@@ -31,6 +39,11 @@ dev = [
 
 [project.scripts]
 jwst-redux = "jwst_redux.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/brackham/jwst-redux"
+Repository = "https://github.com/brackham/jwst-redux"
+Issues = "https://github.com/brackham/jwst-redux/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

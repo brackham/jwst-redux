@@ -101,8 +101,7 @@ class ManifestStore:
                 continue
             recorded_software = entry.get("software", {})
             if any(
-                recorded_software.get(key) != value
-                for key, value in software_requirements.items()
+                recorded_software.get(key) != value for key, value in software_requirements.items()
             ):
                 continue
             outputs = entry.get("outputs", [])

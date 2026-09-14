@@ -43,9 +43,7 @@ def _soss_pipeline_path(exposure: Exposure) -> PipelinePath:
         if element.strip()
     }
     if not optical_elements:
-        raise PlanningError(
-            f"Exposure {exposure.exposure_id} has no optical-elements metadata."
-        )
+        raise PlanningError(f"Exposure {exposure.exposure_id} has no optical-elements metadata.")
     if "F277W" in optical_elements:
         return PipelinePath(
             classes=("Detector1Pipeline",),
@@ -68,9 +66,7 @@ def _soss_pipeline_path(exposure: Exposure) -> PipelinePath:
                 "Tso3 association generation; processing stops after Spec2Pipeline."
             ),
         )
-    return PipelinePath(
-        classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline")
-    )
+    return PipelinePath(classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline"))
 
 
 def _bots_pipeline_path(exposure: Exposure) -> PipelinePath:
@@ -81,6 +77,4 @@ def _bots_pipeline_path(exposure: Exposure) -> PipelinePath:
         raise PlanningError(
             f"Exposure {exposure.exposure_id} has invalid or missing NINTS metadata."
         )
-    return PipelinePath(
-        classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline")
-    )
+    return PipelinePath(classes=("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline"))

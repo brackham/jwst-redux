@@ -135,8 +135,7 @@ def test_toi3884_dataset_plans_preserve_exposure_specific_paths(exposure_records
 
     assert [len(plan.reductions) for plan in plans] == [1, 1, 3, 3]
     assert [
-        tuple(stage.name for stage in reduction.stages)
-        for reduction in plans[2].reductions
+        tuple(stage.name for stage in reduction.stages) for reduction in plans[2].reductions
     ] == [
         ("Detector1Pipeline", "Spec2Pipeline"),
         ("Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline"),

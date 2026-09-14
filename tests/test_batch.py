@@ -125,7 +125,9 @@ def _discovery() -> DiscoveryResult:
     return DiscoveryResult(datasets=build_science_datasets(exposures))
 
 
-def _config(root: Path, *, failure_policy: str = "continue", qa_enabled: bool = False) -> BatchConfig:
+def _config(
+    root: Path, *, failure_policy: str = "continue", qa_enabled: bool = False
+) -> BatchConfig:
     return BatchConfig(
         discovery=DiscoveryConfig(
             QueryConfig(
@@ -170,7 +172,10 @@ def test_batch_discovery_proposal_scope_and_heterogeneous_endpoints(tmp_path: Pa
     assert len(prepared.discovery.exposures) == 8
     assert config.discovery.query.proposal_ids == ("5799", "5863")
     assert _mast_criteria(config.discovery)["program"] == "5799,5863"
-    assert {branch.config.selection.program_id for branch in prepared.branches} == {"05799", "05863"}
+    assert {branch.config.selection.program_id for branch in prepared.branches} == {
+        "05799",
+        "05863",
+    }
     assert len(prepared.branches) == 8
     assert {
         branch.config.selection.resolved_exposure_number: branch.endpoint
@@ -179,7 +184,9 @@ def test_batch_discovery_proposal_scope_and_heterogeneous_endpoints(tmp_path: Pa
     } == {"04101": "stage2", "04102": "stage3", "04103": "stage1"}
 
 
-def test_batch_runs_in_planned_order_and_isolates_workspaces_and_associations(tmp_path: Path) -> None:
+def test_batch_runs_in_planned_order_and_isolates_workspaces_and_associations(
+    tmp_path: Path,
+) -> None:
     config = _config(tmp_path / "work")
     prepared = prepare_batch(config, discoverer=lambda _: _discovery())
     detector1 = FakeDetector1()
@@ -205,15 +212,24 @@ def test_batch_runs_in_planned_order_and_isolates_workspaces_and_associations(tm
     assert len(tso3.members) == 4
     assert all(len(members) == 3 for members in tso3.members[:2])
     assert all(len(members) == 1 for members in tso3.members[2:])
-    assert all(len({name.split("-seg", maxsplit=1)[0] for name in members}) == 1 for members in tso3.members)
+    assert all(
+        len({name.split("-seg", maxsplit=1)[0] for name in members}) == 1
+        for members in tso3.members
+    )
 
-    roots = [Workspace.for_selection(config.discovery.output_root, branch.config.selection).root for branch in prepared.branches]
+    roots = [
+        Workspace.for_selection(config.discovery.output_root, branch.config.selection).root
+        for branch in prepared.branches
+    ]
     assert len(set(roots)) == 8
     assert all(path.is_dir() for path in roots)
     for branch in prepared.branches:
         workspace = Workspace.for_selection(config.discovery.output_root, branch.config.selection)
         manifest = json.loads(workspace.manifest.read_text(encoding="utf-8"))
-        assert all(entry["selection"]["workspace_name"] == workspace.root.name for entry in manifest["runs"])
+        assert all(
+            entry["selection"]["workspace_name"] == workspace.root.name
+            for entry in manifest["runs"]
+        )
 
 
 def test_batch_reuses_completed_work_and_resumes_only_failed_branch(tmp_path: Path) -> None:
@@ -239,7 +255,9 @@ def test_batch_reuses_completed_work_and_resumes_only_failed_branch(tmp_path: Pa
     assert [path.name.split("-seg", maxsplit=1)[0] for path in spec2.calls] == [failure_id]
     assert dict(prepared.branches[0].stage_actions)["Detector1Pipeline"] == "run"
     refreshed = prepare_batch(config, discoverer=lambda _: _discovery())
-    assert all(action == "resume" for branch in refreshed.branches for _, action in branch.stage_actions)
+    assert all(
+        action == "resume" for branch in refreshed.branches for _, action in branch.stage_actions
+    )
 
 
 def test_batch_qa_is_requested_only_for_stages_at_each_planned_endpoint(
@@ -272,4 +290,8 @@ def test_batch_qa_is_requested_only_for_stages_at_each_planned_endpoint(
         ("stage1",),
         ("stage2",),
     }
-    assert not any(stages == ("stage3",) for exposure_id, stages in calls if exposure_id in f277w_ids | single_integration_ids)
+    assert not any(
+        stages == ("stage3",)
+        for exposure_id, stages in calls
+        if exposure_id in f277w_ids | single_integration_ids
+    )

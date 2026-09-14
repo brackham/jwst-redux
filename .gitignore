@@ -2,27 +2,61 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Environments
 .venv/
 venv/
+.env
+.env.*
+!.env.example
+.direnv/
 
 # Editors / OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local credentials and authentication material
+.netrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
 
 # JWST / CRDS / science data
 work/
 data/
 crds_cache/
+.crds_cache/
 sandbox/
 *.fits
 *.fits.gz
 *.asdf
 *.ecsv
+
+# Permit deliberately curated, small science-data fixtures when they are added.
+!tests/fixtures/*.fits
+!tests/fixtures/**/*.fits
+!tests/fixtures/*.fits.gz
+!tests/fixtures/**/*.fits.gz
+!tests/fixtures/*.asdf
+!tests/fixtures/**/*.asdf
+!tests/fixtures/*.ecsv
+!tests/fixtures/**/*.ecsv
 
 # Logs and generated manifests outside examples
 *.log

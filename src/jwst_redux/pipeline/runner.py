@@ -59,9 +59,7 @@ def existing_stage1_outputs(input_path: Path, output_dir: Path) -> tuple[Path, .
     required = expected_stage1_outputs(input_path, output_dir)
     stem = input_path.name.removesuffix("_uncal.fits")
     optional = (output_dir / f"{stem}_ramp.fits",)
-    return required + tuple(
-        path for path in optional if path.is_file() and path.stat().st_size > 0
-    )
+    return required + tuple(path for path in optional if path.is_file() and path.stat().st_size > 0)
 
 
 def expected_stage2_outputs(input_path: Path, output_dir: Path) -> tuple[Path, ...]:
@@ -101,11 +99,7 @@ def run_detector1(
             raise
     elapsed = time.monotonic() - started
 
-    missing = [
-        path
-        for path in required_outputs
-        if not path.is_file() or path.stat().st_size <= 0
-    ]
+    missing = [path for path in required_outputs if not path.is_file() or path.stat().st_size <= 0]
     if missing:
         raise PipelineExecutionError(
             "Detector1Pipeline did not create the expected non-empty output(s): "
@@ -192,9 +186,7 @@ def run_tso3(
     outputs = tuple(
         path
         for path, state in sorted(_output_state(output_dir).items())
-        if path != association_path
-        and state[0] > 0
-        and before.get(path) != state
+        if path != association_path and state[0] > 0 and before.get(path) != state
     )
     if not outputs:
         raise PipelineExecutionError(

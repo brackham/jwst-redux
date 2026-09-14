@@ -209,8 +209,7 @@ def _nirspec_grating(record: dict[str, Any]) -> str | None:
         return None
     filter_name = _upper_text(record.get("filter"))
     elements = (
-        _upper_text(element)
-        for element in str(record.get("opticalElements") or "").split(";")
+        _upper_text(element) for element in str(record.get("opticalElements") or "").split(";")
     )
     return next(
         (element for element in elements if element is not None and element != filter_name),

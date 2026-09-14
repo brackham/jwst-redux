@@ -38,9 +38,7 @@ def normalize_products(records: Iterable[dict[str, Any]]) -> tuple[Product, ...]
     return tuple(products)
 
 
-def select_starting_products(
-    products: Iterable[Product], start_from: str
-) -> tuple[Product, ...]:
+def select_starting_products(products: Iterable[Product], start_from: str) -> tuple[Product, ...]:
     """Select unique science products for the configured starting level."""
     if start_from.lower() != "uncal":
         raise ConfigurationError("Only start_from='uncal' is implemented.")

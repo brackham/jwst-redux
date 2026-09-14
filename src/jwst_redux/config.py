@@ -190,9 +190,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         )
     tso3_overrides = pipeline.get("tso3_overrides", {})
     if not isinstance(tso3_overrides, dict):
-        raise ConfigurationError(
-            "Configuration field 'pipeline.tso3_overrides' must be a mapping."
-        )
+        raise ConfigurationError("Configuration field 'pipeline.tso3_overrides' must be a mapping.")
     overwrite = options.get("overwrite", False)
     if not isinstance(overwrite, bool):
         raise ConfigurationError("Configuration field 'options.overwrite' must be boolean.")
@@ -353,7 +351,9 @@ def _soss_wavelength_windows(qa: dict[str, Any]) -> dict[int, tuple[float, float
         raise ConfigurationError("Configuration field 'qa.soss' must be a mapping.")
     configured = soss.get("wavelength_windows", {})
     if not isinstance(configured, dict):
-        raise ConfigurationError("Configuration field 'qa.soss.wavelength_windows' must be a mapping.")
+        raise ConfigurationError(
+            "Configuration field 'qa.soss.wavelength_windows' must be a mapping."
+        )
     windows = dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     for order_key, bounds in configured.items():
         try:

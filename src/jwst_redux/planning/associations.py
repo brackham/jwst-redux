@@ -29,9 +29,7 @@ def build_compatible_groups(dataset: ScienceDataset) -> tuple[ReductionGroup, ..
     ] = defaultdict(list)
     for exposure in dataset.exposures:
         for detector, products in _product_branches(exposure):
-            exposure_groups[_compatibility_key(exposure, detector)].append(
-                (exposure, products)
-            )
+            exposure_groups[_compatibility_key(exposure, detector)].append((exposure, products))
 
     groups = []
     for compatibility, members in sorted(exposure_groups.items()):
@@ -68,9 +66,7 @@ def build_compatible_groups(dataset: ScienceDataset) -> tuple[ReductionGroup, ..
     return tuple(groups)
 
 
-def _compatibility_key(
-    exposure: Exposure, detector: str | None
-) -> tuple[tuple[str, str], ...]:
+def _compatibility_key(exposure: Exposure, detector: str | None) -> tuple[tuple[str, str], ...]:
     mode = observing_mode_for(exposure)
     metadata = {field: getattr(exposure, field) for field in GENERIC_COMPATIBILITY_FIELDS}
     metadata.update(
@@ -99,9 +95,7 @@ def _product_branches(exposure: Exposure) -> tuple[tuple[str | None, tuple[Produ
     for product in exposure.products:
         detector = product.detector or exposure.detector
         if detector is None:
-            raise PlanningError(
-                f"NIRSpec product {product.filename} lacks detector metadata."
-            )
+            raise PlanningError(f"NIRSpec product {product.filename} lacks detector metadata.")
         by_detector[detector].append(product)
 
     required = nirspec_bots_detectors(exposure)

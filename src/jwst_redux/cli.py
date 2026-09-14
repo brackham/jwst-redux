@@ -92,8 +92,7 @@ def download(
     action = "Reused" if result.download.reused else "Downloaded"
     console.print(f"Selected: {write_config.selection.label}")
     console.print(
-        f"[green]{action}[/] {result.download.path} "
-        f"({_format_bytes(result.download.size_bytes)})"
+        f"[green]{action}[/] {result.download.path} ({_format_bytes(result.download.size_bytes)})"
     )
 
 
@@ -118,7 +117,11 @@ def run(
     """Run an explicit selected exposure, or all planned branches with ``--all``."""
     if all_branches:
         if through is not None:
-            _abort(JWSTReduxError("--through is not used with --all; every branch uses its planned endpoint."))
+            _abort(
+                JWSTReduxError(
+                    "--through is not used with --all; every branch uses its planned endpoint."
+                )
+            )
         try:
             batch_config = load_batch_config(config)
             prepared = prepare_batch(batch_config)
@@ -194,7 +197,9 @@ def _print_stage1_result(result: Stage1WorkflowResult) -> None:
         f"({_format_bytes(result.download.size_bytes)})"
     )
     if result.status == "skipped":
-        console.print("[green]Detector1Pipeline skipped:[/] matching successful manifest run found.")
+        console.print(
+            "[green]Detector1Pipeline skipped:[/] matching successful manifest run found."
+        )
     else:
         console.print(f"[green]Detector1Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
     for output in result.outputs:
@@ -261,9 +266,7 @@ def _print_search(config: DiscoveryConfig, result: DiscoveryResult) -> None:
         console.print(f"\n[bold cyan]Dataset {number}: {_dataset_label(dataset)}[/]")
         console.print("Identity: " + _format_identity(dataset.identity))
         for exposure_number, exposure in enumerate(dataset.exposures, start=1):
-            console.print(
-                f"  [bold]Exposure {exposure_number}: {_show(exposure.exposure_id)}[/]"
-            )
+            console.print(f"  [bold]Exposure {exposure_number}: {_show(exposure.exposure_id)}[/]")
             console.print(
                 f"    Archive target: {_show(exposure.target_name)}; "
                 f"start={_format_time(exposure.start_time)} UTC; "
@@ -304,9 +307,7 @@ def _print_plan(
     )
     for dataset_number, dataset_plan in enumerate(plans, start=1):
         dataset = dataset_plan.dataset
-        console.print(
-            f"\n[bold cyan]Dataset {dataset_number}: {_dataset_label(dataset)}[/]"
-        )
+        console.print(f"\n[bold cyan]Dataset {dataset_number}: {_dataset_label(dataset)}[/]")
         console.print("Identity: " + _format_identity(dataset.identity))
         console.print(
             f"{_counted(len(dataset.exposures), 'exposure')}; "
@@ -379,12 +380,9 @@ def _print_batch_summary(prepared: PreparedBatch) -> None:
     table.add_column("Planned pipeline path")
     table.add_column("Action")
     for branch in prepared.branches:
-        stages = " → ".join(
-            stage.removesuffix("Pipeline") for stage in branch.pipeline_path
-        )
+        stages = " → ".join(stage.removesuffix("Pipeline") for stage in branch.pipeline_path)
         actions = ", ".join(
-            f"{stage.removesuffix('Pipeline')}={action}"
-            for stage, action in branch.stage_actions
+            f"{stage.removesuffix('Pipeline')}={action}" for stage, action in branch.stage_actions
         )
         table.add_row(branch.label, str(branch.segment_count), stages, actions)
     console.print(table)
@@ -402,9 +400,7 @@ def _print_batch_result(result: BatchWorkflowResult) -> None:
                 f"through {branch_result.branch.endpoint}."
             )
         else:
-            console.print(
-                f"[red]Failed[/] {branch_result.branch.label}: {branch_result.error}"
-            )
+            console.print(f"[red]Failed[/] {branch_result.branch.label}: {branch_result.error}")
     if result.failures:
         console.print(
             f"[yellow]{len(result.failures)} branch failure(s) recorded; successful siblings "

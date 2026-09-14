@@ -1,11 +1,11 @@
 # jwst-redux
 
-`jwst-redux` is intended to be a thin, reproducible orchestration layer around two existing systems:
+`jwst-redux` is a thin, reproducible orchestration layer around two existing systems:
 
 1. MAST / `astroquery.mast` for discovering and retrieving JWST data.
 2. The official `jwst` package for calibration.
 
-It should **not** reimplement JWST calibration algorithms. Its job is to make the common workflow
+It does **not** reimplement JWST calibration algorithms. Its job is to make the common workflow
 
 > discover → plan → download → calibrate → record provenance
 
@@ -13,6 +13,35 @@ fast, repeatable, resumable, and easy to apply to another JWST dataset.
 
 The package supports the standard official time-series paths for NIRISS/SOSS and NIRSpec/BOTS.
 The first validated science target is TOI-3884.
+
+## Status
+
+This is early-development research software (`0.1.0.dev0`). The TOI-3884 workflows are the first
+validated use cases; interfaces, configuration fields, and mode coverage may change while those
+workflows are completed. Always inspect a plan before starting a large download or reduction, and
+validate calibrated products for your own scientific use.
+
+## Installation
+
+`jwst-redux` requires Python 3.11 or newer and is not yet distributed on PyPI. Install it from a
+clone in an isolated environment:
+
+```bash
+git clone https://github.com/brackham/jwst-redux.git
+cd jwst-redux
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+```
+
+The official `jwst` dependency is a substantial scientific software stack. A calibration run also
+needs CRDS reference data and may download missing references. Configure `CRDS_PATH` and
+`CRDS_SERVER_URL` following the
+[STScI CRDS setup guidance](https://jwst-pipeline.readthedocs.io/en/stable/jwst/user_documentation/reference_files_crds.html),
+and keep that cache outside this repository.
+
+## Quick start
 
 Discovery and planning remain read-only:
 
@@ -26,6 +55,13 @@ datasets/visits, their exposure-level MAST records, and each exposure's uncalibr
 `plan` validates segment completeness, forms one or more metadata-compatible reduction branches
 within each scientific dataset, and reports the official pipeline path. Neither command downloads
 data, creates a workspace or association, accesses CRDS, or executes the pipeline.
+
+The included configurations write downloaded and generated science products below `work/`, which is
+ignored by Git. Real JWST inputs, calibrated products, QA plots, manifests, and logs can consume many
+gigabytes and should not be committed to this repository. Review `output.root` before running a
+configuration copied or adapted from elsewhere.
+
+## Running calibrated workflows
 
 For the TOI-3884 example, `query.archive_target_names` records the target names validated in MAST
 (`TOI-3884` and `TOI-3884b`) while `query.target` retains the scientific target identity. The optional
@@ -130,3 +166,7 @@ pytest
 
 If another supported Python version is preferable for the current `jwst` release, use it instead and
 record the choice in the repository once verified.
+
+## License
+
+`jwst-redux` is available under the [MIT License](LICENSE).

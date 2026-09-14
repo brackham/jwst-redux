@@ -135,7 +135,11 @@ def test_selected_exposure_reuses_completed_segment_then_runs_remaining_in_order
     spec2.calls.clear()
     result = run_selected_through(config, **_arguments(discovery, downloader, detector1, spec2))
 
-    assert [segment.stage1.selected.product.segment_number for segment in result.segments] == [1, 2, 3]
+    assert [segment.stage1.selected.product.segment_number for segment in result.segments] == [
+        1,
+        2,
+        3,
+    ]
     assert result.segments[0].stage1.status == "skipped"
     assert result.segments[0].stage2 is not None and result.segments[0].stage2.status == "skipped"
     assert [path.name for path in detector1.calls] == [
@@ -168,7 +172,10 @@ def test_partial_failure_stops_sequence_and_later_run_resumes_each_segment(
 
     manifest_path = Workspace.for_selection(config.discovery.output_root, config.selection).manifest
     failed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert [(entry["operation"], entry["segment_number"], entry["status"]) for entry in failed_manifest["runs"]] == [
+    assert [
+        (entry["operation"], entry["segment_number"], entry["status"])
+        for entry in failed_manifest["runs"]
+    ] == [
         ("stage1", 1, "success"),
         ("stage2", 1, "success"),
         ("stage1", 2, "success"),
@@ -181,7 +188,11 @@ def test_partial_failure_stops_sequence_and_later_run_resumes_each_segment(
         config,
         **_arguments(discovery, downloader, second_detector1, second_spec2),
     )
-    assert [segment.stage1.status for segment in result.segments] == ["skipped", "skipped", "success"]
+    assert [segment.stage1.status for segment in result.segments] == [
+        "skipped",
+        "skipped",
+        "success",
+    ]
     assert [segment.stage2.status for segment in result.segments if segment.stage2] == [
         "skipped",
         "success",
@@ -196,7 +207,9 @@ def test_partial_failure_stops_sequence_and_later_run_resumes_each_segment(
     ]
 
 
-def test_selected_exposure_requires_complete_segment_set_before_writes(tmp_path, exposure_records) -> None:
+def test_selected_exposure_requires_complete_segment_set_before_writes(
+    tmp_path, exposure_records
+) -> None:
     config, incomplete = _case(tmp_path, exposure_records, segments=(1, 2), segment_count=3)
 
     with pytest.raises(PlanningError, match=r"segments \[1, 2\].*expected \[1, 2, 3\]"):

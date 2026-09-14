@@ -31,9 +31,7 @@ def select_exposure(
     dataset = _exactly_one(matching_datasets, "scientific dataset", identity)
 
     matching_exposures = [
-        exposure
-        for exposure in dataset.exposures
-        if exposure.exposure_id == selection.exposure_id
+        exposure for exposure in dataset.exposures if exposure.exposure_id == selection.exposure_id
     ]
     exposure = _exactly_one(
         matching_exposures,
@@ -63,10 +61,7 @@ def select_exposure(
                 product
                 for product in exposure.products
                 if product.suffix == "_uncal"
-                and (
-                    detector is None
-                    or (product.detector or exposure.detector) == detector
-                )
+                and (detector is None or (product.detector or exposure.detector) == detector)
             ),
             key=lambda product: (product.segment_number or 0, product.filename),
         )

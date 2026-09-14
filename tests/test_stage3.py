@@ -94,9 +94,7 @@ def _case(tmp_path: Path, exposure_records) -> tuple[WriteConfig, DiscoveryResul
         normalize_exposure(exposure_records[0]), segment_count=3, products=products
     )
     unrelated = replace(normalize_exposure(exposure_records[1]), products=())
-    discovery = DiscoveryResult(
-        datasets=build_science_datasets((selected_exposure, unrelated))
-    )
+    discovery = DiscoveryResult(datasets=build_science_datasets((selected_exposure, unrelated)))
     config = WriteConfig(
         discovery=DiscoveryConfig(
             query=QueryConfig(
@@ -167,9 +165,10 @@ def test_stage3_resolves_manifest_inputs_constructs_association_and_records_outp
         "jw05799001001_04101_00001-seg002_nis_calints.fits",
         "jw05799001001_04101_00001-seg003_nis_calints.fits",
     ]
-    assert association_path.parent == Workspace.for_selection(
-        config.discovery.output_root, config.selection
-    ).associations
+    assert (
+        association_path.parent
+        == Workspace.for_selection(config.discovery.output_root, config.selection).associations
+    )
     assert {
         (association_path.parent / member["expname"]).resolve()
         for member in association["products"][0]["members"]
@@ -267,7 +266,9 @@ def test_obs002_is_selected_in_an_isolated_workspace_without_touching_obs001(
     assert all(obs001_id not in json.dumps(entry) for entry in manifest["runs"])
 
 
-def test_stage3_refuses_missing_manifest_calints_before_pipeline(tmp_path, exposure_records) -> None:
+def test_stage3_refuses_missing_manifest_calints_before_pipeline(
+    tmp_path, exposure_records
+) -> None:
     config, discovery = _case(tmp_path, exposure_records)
     run_selected_through(
         config,
@@ -279,7 +280,9 @@ def test_stage3_refuses_missing_manifest_calints_before_pipeline(tmp_path, expos
         stage3_readiness(config, discoverer=lambda _: discovery)
 
 
-def test_stage3_readiness_refuses_unsuccessful_expected_stage2_run(tmp_path, exposure_records) -> None:
+def test_stage3_readiness_refuses_unsuccessful_expected_stage2_run(
+    tmp_path, exposure_records
+) -> None:
     config, discovery = _case(tmp_path, exposure_records)
     with pytest.raises(PipelineExecutionError, match="synthetic Spec2 failure for segment 2"):
         run_selected_through(

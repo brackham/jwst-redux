@@ -74,9 +74,7 @@ class BatchWorkflowResult:
         return tuple(result for result in self.branches if result.status == "failed")
 
 
-def prepare_batch(
-    config: BatchConfig, *, discoverer: Discoverer | None = None
-) -> PreparedBatch:
+def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) -> PreparedBatch:
     """Discover and resolve every branch without writing, downloading, or CRDS access."""
     result = (discoverer or discover)(config.discovery)
     plans = make_reduction_plans(config.discovery, result.datasets)
@@ -176,7 +174,9 @@ def _endpoint(reduction: ReductionPlan) -> str:
 
 def _stage_action(config: WriteConfig, exposure: Exposure, pipeline_stage: str) -> str:
     """Report an intact local success as resume; exact identity is rechecked at run time."""
-    workspace = Workspace.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
+    workspace = Workspace.existing_for_selection(
+        config.discovery.output_root.resolve(), config.selection
+    )
     if not workspace.manifest.is_file():
         return "run"
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
@@ -204,6 +204,11 @@ def _outputs_intact(records: object) -> bool:
             return False
         path = Path(str(record.get("path", "")))
         size = record.get("size_bytes")
-        if not path.is_file() or not isinstance(size, int) or size <= 0 or path.stat().st_size != size:
+        if (
+            not path.is_file()
+            or not isinstance(size, int)
+            or size <= 0
+            or path.stat().st_size != size
+        ):
             return False
     return True

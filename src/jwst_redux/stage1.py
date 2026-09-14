@@ -425,12 +425,7 @@ def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:
     record = candidates[0]
     path = Path(str(record["path"]))
     size = record.get("size_bytes")
-    if (
-        not path.is_file()
-        or not isinstance(size, int)
-        or size <= 0
-        or path.stat().st_size != size
-    ):
+    if not path.is_file() or not isinstance(size, int) or size <= 0 or path.stat().st_size != size:
         raise PipelineExecutionError(f"Recorded Stage 1 input is missing or changed: {path}")
     return path
 
@@ -493,9 +488,7 @@ def _run_selected_stage3(
     selected = readiness.selected
     _validate_stage3_group(selected)
     for member in readiness.calints_inputs:
-        _validate_nirspec_file_metadata(
-            member, selected.exposure, selected.exposure.detector
-        )
+        _validate_nirspec_file_metadata(member, selected.exposure, selected.exposure.detector)
     association = create_tso3_association(
         readiness.calints_inputs,
         workspace.associations,
@@ -650,12 +643,7 @@ def _manifest_stage2_calints(entry: dict[str, Any]) -> Path:
     record = candidates[0]
     path = Path(str(record["path"]))
     size = record.get("size_bytes")
-    if (
-        not path.is_file()
-        or not isinstance(size, int)
-        or size <= 0
-        or path.stat().st_size != size
-    ):
+    if not path.is_file() or not isinstance(size, int) or size <= 0 or path.stat().st_size != size:
         raise PipelineExecutionError(f"Recorded Stage 2 input is missing or changed: {path}")
     return path
 
@@ -675,9 +663,7 @@ def _run_selected_stage2(
     else:
         stage1_run_key = stage1.manifest_entry.get("run_key")
         successful_stage1 = (
-            manifest.successful_run(stage1_run_key)
-            if isinstance(stage1_run_key, str)
-            else None
+            manifest.successful_run(stage1_run_key) if isinstance(stage1_run_key, str) else None
         )
     if successful_stage1 is None:
         raise PipelineExecutionError("No intact successful Stage 1 manifest run is available.")
@@ -844,9 +830,7 @@ def _run_selected_stage2(
         raise PipelineExecutionError(f"Spec2Pipeline failed: {error}") from error
 
 
-def _discover_selected(
-    config: WriteConfig, discoverer: Discoverer | None
-) -> SelectedProduct:
+def _discover_selected(config: WriteConfig, discoverer: Discoverer | None) -> SelectedProduct:
     result = (discoverer or discover)(config.discovery)
     return select_stage1_product(result.datasets, config.selection)
 
@@ -879,9 +863,7 @@ def _base_entry(
         "expected_raw_size_bytes": product.size_bytes,
         "pipeline_class": pipeline_class,
         "explicit_parameter_overrides": (
-            config.parameter_overrides
-            if parameter_overrides is None
-            else parameter_overrides
+            config.parameter_overrides if parameter_overrides is None else parameter_overrides
         ),
     }
     if mode_key(exposure) == BOTS_MODE:
@@ -939,19 +921,14 @@ def _validate_stage3_group(selected: SelectedExposure) -> None:
             f"{selected.exposure.exposure_id} resolves to {pipeline_path.classes!r}."
         )
     detectors = {product.detector for product in selected.products}
-    if (
-        mode_key(selected.exposure) == BOTS_MODE
-        and detectors != {selected.exposure.detector}
-    ):
+    if mode_key(selected.exposure) == BOTS_MODE and detectors != {selected.exposure.detector}:
         raise PipelineExecutionError(
             "TSO3 association products do not match their detector-specific branch: "
             f"branch={selected.exposure.detector}, products={sorted(str(x) for x in detectors)}."
         )
 
 
-def _validate_nirspec_file_metadata(
-    path: Path, exposure: Exposure, detector: str | None
-) -> None:
+def _validate_nirspec_file_metadata(path: Path, exposure: Exposure, detector: str | None) -> None:
     """Verify a local BOTS branch against authoritative FITS metadata."""
     if mode_key(exposure) != BOTS_MODE:
         return
@@ -986,12 +963,10 @@ def _validate_nirspec_file_metadata(
 def _tso3_product_name(selected: SelectedExposure) -> str:
     exposure_id = selected.exposure.exposure_id
     if not exposure_id:
-        raise PipelineExecutionError("Cannot name a TSO3 association without an exposure identifier.")
-    detector = (
-        selected.exposure.detector
-        if mode_key(selected.exposure) == BOTS_MODE
-        else None
-    )
+        raise PipelineExecutionError(
+            "Cannot name a TSO3 association without an exposure identifier."
+        )
+    detector = selected.exposure.detector if mode_key(selected.exposure) == BOTS_MODE else None
     suffix = "" if detector is None else f"_{detector.lower()}"
     return f"{exposure_id}{suffix}_tso3"
 
@@ -1028,7 +1003,9 @@ def _resume_identity(
 
 def _workspace(config: WriteConfig) -> Workspace:
     """Resolve the write workspace isolated by the complete selected exposure."""
-    return Workspace.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
+    return Workspace.existing_for_selection(
+        config.discovery.output_root.resolve(), config.selection
+    )
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:

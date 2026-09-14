@@ -15,9 +15,7 @@ def test_workspace_create(tmp_path) -> None:
 
 
 def test_existing_workspace_uses_only_a_matching_legacy_manifest(tmp_path) -> None:
-    selection = ExposureSelectionConfig(
-        "05799", "001", "001", "jw05799001001_04101_00001", "04101"
-    )
+    selection = ExposureSelectionConfig("05799", "001", "001", "jw05799001001_04101_00001", "04101")
     legacy = Workspace(tmp_path / "legacy")
     legacy.create()
     legacy.manifest.write_text(
