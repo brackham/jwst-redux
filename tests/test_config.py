@@ -23,6 +23,63 @@ def test_validate_public_nirspec_batch_config() -> None:
     assert g395h.discovery.query.proposal_ids == ("5799",)
     assert g395h.endpoint == "planned"
     assert g395h.failure_policy == "continue"
+    assert g395h.retention == "all"
+
+
+def test_invalid_batch_retention_value_fails_clearly(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "toi3884-bots-g395h.yaml"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        source.read_text(encoding="utf-8").replace("retention: all", "retention: minimal"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match=r"options\.retention.*'all' or 'final'"):
+        load_batch_config(config_path)
+
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("retention: minimal", "retention: final"),
+        encoding="utf-8",
+    )
+    assert load_batch_config(config_path).retention == "final"
+
+
+def test_invalid_write_retention_value_fails_clearly(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    contents = """
+query:
+  target: TOI-3884
+  instrument: NIRISS
+  exposure_type: NIS_SOSS
+products:
+  start_from: uncal
+pipeline:
+  stages: auto
+output:
+  root: ./work
+stage1:
+  selection:
+    program_id: 5799
+    observation_id: 1
+    visit_number: 1
+    exposure_number: "04101"
+    exposure_id: jw05799001001_04101_00001
+options:
+  retention: minimal
+"""
+    config_path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match=r"options\.retention.*'all' or 'final'"):
+        load_write_config(config_path)
+
+    config_path.write_text(
+        contents.replace("retention: minimal", "retention: final"), encoding="utf-8"
+    )
+    assert load_write_config(config_path).retention == "final"
+    config_path.write_text(
+        contents.replace("options:\n  retention: minimal", "options: {}"), encoding="utf-8"
+    )
+    assert load_write_config(config_path).retention == "all"
 
 
 def test_nirspec_explicit_write_selection_requires_detector(tmp_path: Path) -> None:

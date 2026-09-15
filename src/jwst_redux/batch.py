@@ -54,6 +54,7 @@ class PreparedBatch:
     discovery: DiscoveryResult
     plans: tuple[DatasetPlan, ...]
     branches: tuple[BatchBranch, ...]
+    retention: str = "all"
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) 
                         stage_actions=stage_actions,
                     )
                 )
-    return PreparedBatch(result, plans, tuple(branches))
+    return PreparedBatch(result, plans, tuple(branches), retention=config.retention)
 
 
 def run_batch(

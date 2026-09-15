@@ -295,3 +295,38 @@ def test_batch_qa_is_requested_only_for_stages_at_each_planned_endpoint(
         for exposure_id, stages in calls
         if exposure_id in f277w_ids | single_integration_ids
     )
+
+
+def test_batch_applies_final_retention_independently_per_branch(tmp_path: Path) -> None:
+    config = replace(_config(tmp_path / "work"), retention="final")
+    prepared = prepare_batch(config, discoverer=lambda _: _discovery())
+    failure_id = "jw05863001001_04102_00001"
+
+    result = _run(
+        config,
+        prepared,
+        FakeDownloader(),
+        FakeDetector1(),
+        FakeSpec2(fail_exposure=failure_id),
+        FakeTso3(),
+    )
+
+    assert all(branch.config.retention == "final" for branch in prepared.branches)
+    assert [item.branch.config.selection.exposure_id for item in result.failures] == [failure_id]
+    for item in result.branches:
+        workspace = Workspace.for_selection(
+            config.discovery.output_root, item.branch.config.selection
+        )
+        if item.status == "failed":
+            assert any(workspace.stage1.glob("*.fits"))
+            continue
+        assert item.workflow is not None and item.workflow.retention is not None
+        if item.branch.endpoint == "stage1":
+            assert item.workflow.retention.status == "skipped"
+            assert any(workspace.stage1.glob("*.fits"))
+        else:
+            assert item.workflow.retention.status == "success"
+            assert not any(workspace.stage1.glob("*.fits"))
+        if item.branch.endpoint == "stage3":
+            assert not any(workspace.stage2.glob("*.fits"))
+            assert any(workspace.stage3.glob("*.fits"))

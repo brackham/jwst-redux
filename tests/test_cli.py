@@ -9,7 +9,8 @@ from jwst_redux.mast.products import normalize_products, select_starting_product
 from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 
 
-def _write_config(path: Path, output_root: Path) -> None:
+def _write_config(path: Path, output_root: Path, *, retention: str | None = None) -> None:
+    options = "" if retention is None else f"options:\n  retention: {retention}\n"
     path.write_text(
         f"""
 query:
@@ -23,6 +24,7 @@ pipeline:
   stages: auto
 output:
   root: {output_root}
+{options}
 """,
         encoding="utf-8",
     )
@@ -61,8 +63,25 @@ def test_search_and_plan_are_read_only(
     assert "Detector1Pipeline" in plan.stdout
     assert "Spec2Pipeline" in plan.stdout
     assert "Tso3Pipeline" in plan.stdout
+    assert "Retention: all" in plan.stdout
     assert "no downloads, CRDS access, workspace creation" in normalized_plan
     assert not output_root.exists()
+
+
+def test_plan_displays_configured_final_retention(
+    tmp_path, monkeypatch, exposure_records, product_records
+) -> None:
+    exposures = tuple(map(normalize_exposure, exposure_records))
+    products = select_starting_products(normalize_products(product_records), "uncal")
+    result = DiscoveryResult(datasets=build_science_datasets(attach_products(exposures, products)))
+    monkeypatch.setattr(cli, "discover", lambda config: result)
+    config_path = tmp_path / "config.yaml"
+    _write_config(config_path, tmp_path / "work", retention="final")
+
+    plan = CliRunner().invoke(cli.app, ["plan", str(config_path)])
+
+    assert plan.exit_code == 0
+    assert "Retention: final" in plan.stdout
 
 
 def test_format_bytes_keeps_small_products_visible() -> None:
