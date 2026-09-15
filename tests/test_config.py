@@ -11,60 +11,18 @@ from jwst_redux.config import (
 from jwst_redux.exceptions import ConfigurationError
 
 
-def test_load_toi3884_config() -> None:
-    path = Path(__file__).parents[1] / "configs" / "toi3884.yaml"
-    config = load_config(path)
-    assert config["query"]["target"] == "TOI-3884"
-    assert config["query"]["instrument"] == "NIRISS"
-    assert config["query"]["exposure_type"] == "NIS_SOSS"
+def test_validate_public_nirspec_batch_config() -> None:
+    path = Path(__file__).parents[1] / "configs" / "toi3884-bots-g395h.yaml"
+    g395h = load_batch_config(path)
 
-
-def test_validate_toi3884_discovery_config() -> None:
-    path = Path(__file__).parents[1] / "configs" / "toi3884.yaml"
-    config = load_discovery_config(path)
-    assert config.query.target == "TOI-3884"
-    assert config.query.target_match == "mast_targname"
-    assert config.query.archive_target_names == ("TOI-3884", "TOI-3884b")
-    assert config.query.proposal_ids is None
-    assert config.start_from == "uncal"
-
-
-def test_validate_toi3884_exposure_selection() -> None:
-    path = Path(__file__).parents[1] / "configs" / "toi3884.yaml"
-    config = load_write_config(path)
-    assert config.selection.program_id == "05799"
-    assert config.selection.observation_id == "002"
-    assert config.selection.visit_number == "001"
-    assert config.selection.exposure_number == "04101"
-    assert config.selection.exposure_id == "jw05799002001_04101_00001"
-    assert config.selection.label == "GO-5799 Obs 002 / Visit 001 / Exposure 04101"
-    assert config.crds_context == "auto"
-    assert config.parameter_overrides == {}
-    assert config.spec2_parameter_overrides == {}
-    assert config.tso3_parameter_overrides == {}
-    assert config.soss_wavelength_windows == {1: (0.85, 2.83), 2: (0.60, 1.00), 3: (0.70, 0.95)}
-
-
-def test_validate_selector_free_toi3884_batch_config() -> None:
-    path = Path(__file__).parents[1] / "configs" / "toi3884-all-soss.yaml"
-    config = load_batch_config(path)
-    assert config.discovery.query.archive_target_names == ("TOI-3884", "TOI-3884b")
-    assert config.discovery.query.proposal_ids == ("5799", "5863")
-    assert config.endpoint == "planned"
-    assert config.failure_policy == "continue"
-
-
-def test_validate_nirspec_batch_configs_without_soss_qa_settings() -> None:
-    root = Path(__file__).parents[1] / "configs"
-    g395m = load_batch_config(root / "toi3884-bots-g395m.yaml")
-    g395h = load_batch_config(root / "toi3884-bots-g395h.yaml")
-
-    assert (g395m.discovery.query.instrument, g395m.discovery.query.exposure_type) == (
+    assert (g395h.discovery.query.instrument, g395h.discovery.query.exposure_type) == (
         "NIRSPEC",
         "NRS_BRIGHTOBJ",
     )
-    assert g395m.discovery.query.observation_id == "002"
+    assert g395h.discovery.query.observation_id == "003"
     assert g395h.discovery.query.proposal_ids == ("5799",)
+    assert g395h.endpoint == "planned"
+    assert g395h.failure_policy == "continue"
 
 
 def test_nirspec_explicit_write_selection_requires_detector(tmp_path: Path) -> None:

@@ -1,15 +1,7 @@
 # jwst-redux
 
 `jwst-redux` is a thin orchestration layer around MAST / `astroquery.mast` and the official
-STScI `jwst` calibration package. It discovers archival observations, plans the appropriate
-pipeline path from metadata, retrieves inputs, runs the official pipelines, records provenance,
-and produces inspection QA.
-
-It does not reimplement JWST calibration. Its purpose is to make the workflow
-
-> discover → plan → download → calibrate → record provenance → inspect QA
-
-reproducible, resumable, and easier to apply to JWST time-series observations.
+STScI `jwst` calibration package.
 
 ## Status
 
@@ -22,10 +14,9 @@ scientific use.
 
 - YAML-based target and workflow configuration
 - Read-only MAST discovery and reduction planning
-- Metadata-aware selection of official Detector1, Spec2, and TSO3 pipeline paths
+- Metadata-based selection of official Detector1, Spec2, and TSO3 pipeline paths
 - Resumable downloads and calibration runs with recorded provenance
 - Derived QA products for inspecting time-series reductions
-- Isolated, Git-ignored workspaces for downloaded and generated science data
 
 ## Installation
 
@@ -48,13 +39,12 @@ and keep the CRDS cache outside this repository.
 
 ## Quick start
 
-The included TOI-3884 configurations provide representative NIRISS/SOSS and NIRSpec/BOTS examples:
+The included TOI-3884 configuration provides a representative NIRSpec/BOTS example:
 
 ```bash
-jwst-redux search configs/toi3884.yaml
-jwst-redux plan configs/toi3884.yaml
-jwst-redux run configs/toi3884-all-soss.yaml --all
-jwst-redux qa configs/toi3884.yaml
+jwst-redux search configs/toi3884-bots-g395h.yaml
+jwst-redux plan configs/toi3884-bots-g395h.yaml
+jwst-redux run configs/toi3884-bots-g395h.yaml --all
 ```
 
 `search` and `plan` are read-only: they do not download data, access CRDS, create workspaces, or run
@@ -68,9 +58,8 @@ calibration. `run` can download and process large JWST products, so review its p
 | NIRISS/SOSS | Validated workflows for selected time-series datasets through the applicable official pipeline stages and QA |
 | NIRSpec/BOTS | Validated workflows for selected bright-object time-series datasets through the applicable official pipeline stages and QA |
 
-Validation is currently centered on the included TOI-3884 configurations. See the
-[architecture notes](docs/architecture.md) and [initial workflow notes](docs/codex-first-task.md)
-for more detail about design choices and current scope.
+The public example is the TOI-3884 NIRSpec/BOTS G395H configuration. See the
+[architecture notes](docs/architecture.md) for more detail about design choices and current scope.
 
 ## Development
 

@@ -1,4 +1,8 @@
-# First Codex task
+# Historical first Codex task
+
+This document records the original NIRISS/SOSS discovery milestone. Its target-specific
+configuration is retained locally rather than distributed as a public example; the repository's
+runnable public example is `configs/toi3884-bots-g395h.yaml`.
 
 Implement the archive-discovery and dry-run planning path for the first science example.
 
@@ -8,13 +12,13 @@ The following command should query MAST and list all archival JWST NIRISS/SOSS s
 matching TOI-3884 without downloading anything:
 
 ```bash
-jwst-redux search configs/toi3884.yaml
+jwst-redux search path/to/local-soss-config.yaml
 ```
 
 Then:
 
 ```bash
-jwst-redux plan configs/toi3884.yaml
+jwst-redux plan path/to/local-soss-config.yaml
 ```
 
 should identify the archive products needed to start from uncalibrated data, group related exposures
@@ -34,7 +38,7 @@ or segments correctly, and print the proposed official JWST pipeline path for ea
 7. Print enough identifying metadata that the user can verify the discovered datasets before a large
    download.
 8. Report total product count and estimated download size when MAST provides file sizes.
-9. Keep TOI-3884-specific values in `configs/toi3884.yaml`.
+9. Keep TOI-3884-specific values in a YAML configuration rather than Python source.
 10. Update README examples to match the implemented CLI exactly.
 
 Stop after `search` and `plan` are working and tested. Do not proceed to bulk downloading until the
