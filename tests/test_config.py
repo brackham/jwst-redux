@@ -11,6 +11,24 @@ from jwst_redux.config import (
 from jwst_redux.exceptions import ConfigurationError
 
 
+def _write_discovery_config(path: Path, output_root: str) -> None:
+    path.write_text(
+        f"""
+query:
+  target: TOI-3884
+  instrument: NIRISS
+  exposure_type: NIS_SOSS
+products:
+  start_from: uncal
+pipeline:
+  stages: auto
+output:
+  root: {output_root}
+""",
+        encoding="utf-8",
+    )
+
+
 def test_validate_public_nirspec_batch_config() -> None:
     path = Path(__file__).parents[1] / "configs" / "toi3884-bots-g395h.yaml"
     g395h = load_batch_config(path)
@@ -24,6 +42,25 @@ def test_validate_public_nirspec_batch_config() -> None:
     assert g395h.endpoint == "planned"
     assert g395h.failure_policy == "continue"
     assert g395h.retention == "all"
+
+
+def test_output_root_expands_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    config_path = tmp_path / "config.yaml"
+    _write_discovery_config(config_path, "~/Desktop/toi3884")
+
+    assert load_discovery_config(config_path).output_root == home / "Desktop" / "toi3884"
+
+
+def test_relative_output_root_remains_relative(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_discovery_config(config_path, "work/toi3884")
+
+    output_root = load_discovery_config(config_path).output_root
+
+    assert output_root == Path("work/toi3884")
+    assert not output_root.is_absolute()
 
 
 def test_invalid_batch_retention_value_fails_clearly(tmp_path: Path) -> None:

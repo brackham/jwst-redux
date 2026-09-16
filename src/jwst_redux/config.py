@@ -162,7 +162,7 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
             visit_id=_optional_identifier(query.get("visit_id")),
         ),
         start_from=start_from,
-        output_root=Path(_required_string(output, "root")),
+        output_root=Path(_required_string(output, "root")).expanduser(),
     )
 
 
