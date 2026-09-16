@@ -27,6 +27,7 @@ from .pipeline.runner import (
     run_tso3,
 )
 from .provenance import ManifestStore, make_run_key, software_versions, utc_now
+from .retention import RetentionResult, apply_retention
 from .selection import select_exposure, select_stage1_product
 from .stage3_association import Stage3Association, create_tso3_association
 from .workspace import Workspace
@@ -71,6 +72,7 @@ class ThroughWorkflowResult:
     segments: tuple[SegmentWorkflowResult, ...]
     stage3_readiness: Stage3Readiness | None = None
     stage3: Stage3WorkflowResult | None = None
+    retention: RetentionResult | None = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +340,7 @@ def run_selected_through(
             f"{selected_exposure.exposure.exposure_id}."
         )
     segment_results: list[SegmentWorkflowResult] = []
+    qa_succeeded = True
     for product in selected_exposure.products:
         selected = SelectedProduct(
             dataset=selected_exposure.dataset,
@@ -354,7 +357,9 @@ def run_selected_through(
             _selected=selected,
         )
         if config.qa_enabled:
-            _generate_qa_without_affecting_pipeline(config, ("stage1",))
+            qa_succeeded = (
+                _generate_qa_without_affecting_pipeline(config, ("stage1",)) and qa_succeeded
+            )
         stage2 = (
             _run_selected_stage2(
                 config,
@@ -366,7 +371,9 @@ def run_selected_through(
             else None
         )
         if stage2 is not None and config.qa_enabled:
-            _generate_qa_without_affecting_pipeline(config, ("stage2",))
+            qa_succeeded = (
+                _generate_qa_without_affecting_pipeline(config, ("stage2",)) and qa_succeeded
+            )
         segment_results.append(SegmentWorkflowResult(stage1=stage1, stage2=stage2))
     readiness = (
         stage3_readiness(config, selected_exposure=selected_exposure)
@@ -385,21 +392,40 @@ def run_selected_through(
         else None
     )
     if stage3 is not None and config.qa_enabled:
-        _generate_qa_without_affecting_pipeline(config, ("stage3",))
+        qa_succeeded = _generate_qa_without_affecting_pipeline(config, ("stage3",)) and qa_succeeded
+    stage_entries = {
+        "stage1": tuple(segment.stage1.manifest_entry for segment in segment_results),
+        "stage2": tuple(
+            segment.stage2.manifest_entry
+            for segment in segment_results
+            if segment.stage2 is not None
+        ),
+        "stage3": () if stage3 is None else (stage3.manifest_entry,),
+    }
+    retention = apply_retention(
+        config,
+        through,
+        stage_entries,
+        qa_succeeded=qa_succeeded,
+    )
     return ThroughWorkflowResult(
-        segments=tuple(segment_results), stage3_readiness=readiness, stage3=stage3
+        segments=tuple(segment_results),
+        stage3_readiness=readiness,
+        stage3=stage3,
+        retention=retention,
     )
 
 
-def _generate_qa_without_affecting_pipeline(config: WriteConfig, stages: tuple[str, ...]) -> None:
+def _generate_qa_without_affecting_pipeline(config: WriteConfig, stages: tuple[str, ...]) -> bool:
     """Generate derived QA without allowing plot failures to affect calibration."""
     from .qa.workflow import generate_qa
 
     try:
-        generate_qa(config, stages=stages)
+        results = generate_qa(config, stages=stages)
     except Exception:  # noqa: BLE001 - QA must never invalidate calibration success.
         # QA failures are recorded by the QA layer; pipeline success remains valid.
-        return
+        return False
+    return bool(results) and all(result.status in {"success", "skipped"} for result in results)
 
 
 def resolve_stage1_rateints(manifest_entry: dict[str, Any]) -> Path:

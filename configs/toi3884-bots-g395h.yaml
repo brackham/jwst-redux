@@ -32,6 +32,8 @@ output:
 
 options:
   overwrite: false
+  # all (default) retains every stage; final prunes recorded upstream FITS after QA succeeds.
+  retention: all
   dry_run: false
   batch_failure_policy: continue
 

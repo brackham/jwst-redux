@@ -17,6 +17,7 @@ scientific use.
 - Metadata-based selection of official Detector1, Spec2, and TSO3 pipeline paths
 - Resumable downloads and calibration runs with recorded provenance
 - Derived QA products for inspecting time-series reductions
+- Configurable retention of all products or only raw and final-stage products
 
 ## Installation
 
@@ -50,6 +51,10 @@ jwst-redux run configs/toi3884-bots-g395h.yaml --all
 `search` and `plan` are read-only: they do not download data, access CRDS, create workspaces, or run
 calibration. `run` can download and process large JWST products, so review its plan and the configured
 `output.root` first. Example outputs are written below `work/`, which is ignored by Git.
+
+Pipeline products are retained by default. Set `options.retention: final` to remove only recorded
+upstream-stage FITS products after the requested endpoint and all enabled QA complete successfully.
+Raw inputs, endpoint products, QA, logs, associations, provenance, and unrelated files are retained.
 
 ## Supported modes
 

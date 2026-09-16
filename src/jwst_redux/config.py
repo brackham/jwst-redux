@@ -92,6 +92,7 @@ class WriteConfig:
     spec2_parameter_overrides: dict[str, Any]
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
+    retention: str = "all"
     qa_enabled: bool = False
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
@@ -110,6 +111,7 @@ class BatchConfig:
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
     failure_policy: str
+    retention: str = "all"
     qa_enabled: bool = False
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
@@ -162,6 +164,15 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
         start_from=start_from,
         output_root=Path(_required_string(output, "root")),
     )
+
+
+def load_retention_policy(path: str | Path) -> str:
+    """Load the retention policy without requiring a write or batch selection."""
+    data = load_config(path)
+    options = data.get("options", {})
+    if not isinstance(options, dict):
+        raise ConfigurationError("Configuration field 'options' must be a mapping.")
+    return _retention_policy(options)
 
 
 def load_write_config(path: str | Path) -> WriteConfig:
@@ -223,6 +234,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         spec2_parameter_overrides=dict(spec2_overrides),
         tso3_parameter_overrides=dict(tso3_overrides),
         overwrite=overwrite,
+        retention=_retention_policy(options),
         qa_enabled=qa_enabled,
         soss_wavelength_windows=soss_wavelength_windows,
     )
@@ -278,6 +290,7 @@ def load_batch_config(path: str | Path) -> BatchConfig:
         tso3_parameter_overrides=dict(tso3_overrides),
         overwrite=overwrite,
         failure_policy=failure_policy,
+        retention=_retention_policy(options),
         qa_enabled=qa_enabled,
         soss_wavelength_windows=_soss_wavelength_windows(qa),
     )
@@ -295,6 +308,7 @@ def write_config_for_exposure(
         spec2_parameter_overrides=dict(config.spec2_parameter_overrides),
         tso3_parameter_overrides=dict(config.tso3_parameter_overrides),
         overwrite=config.overwrite,
+        retention=config.retention,
         qa_enabled=config.qa_enabled,
         soss_wavelength_windows=dict(config.soss_wavelength_windows),
     )
@@ -305,6 +319,20 @@ def _mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigurationError(f"Configuration field '{key}' must be a mapping.")
     return value
+
+
+def _retention_policy(options: dict[str, Any]) -> str:
+    value = options.get("retention", "all")
+    if not isinstance(value, str):
+        raise ConfigurationError(
+            "Configuration field 'options.retention' must be 'all' or 'final'."
+        )
+    policy = value.strip().lower()
+    if policy not in {"all", "final"}:
+        raise ConfigurationError(
+            "Configuration field 'options.retention' must be 'all' or 'final'."
+        )
+    return policy
 
 
 def _required_string(data: dict[str, Any], key: str) -> str:

@@ -16,6 +16,7 @@ from .config import (
     load_batch_config,
     load_config,
     load_discovery_config,
+    load_retention_policy,
     load_write_config,
 )
 from .exceptions import JWSTReduxError
@@ -23,6 +24,7 @@ from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
 from .qa.workflow import generate_qa
+from .retention import RetentionResult
 from .stage1 import (
     SegmentWorkflowResult,
     Stage1WorkflowResult,
@@ -68,6 +70,7 @@ def plan(config: Path) -> None:
     """Show what would be downloaded and which pipeline stages would run."""
     try:
         discovery_config = load_discovery_config(config)
+        retention = load_retention_policy(config)
         result = discover(discovery_config)
         plans = make_reduction_plans(
             discovery_config,
@@ -75,7 +78,7 @@ def plan(config: Path) -> None:
         )
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
-    _print_plan(discovery_config, result, plans)
+    _print_plan(discovery_config, result, plans, retention=retention)
 
 
 @app.command()
@@ -143,8 +146,9 @@ def run(
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
     console.print(f"Selected: {write_config.selection.label}")
+    pruned = set(result.retention.deleted_paths) if result.retention is not None else set()
     for segment in result.segments:
-        _print_segment_result(segment)
+        _print_segment_result(segment, pruned=pruned)
     if result.stage3 is not None:
         _print_stage3_result(result.stage3)
     elif result.stage3_readiness is not None:
@@ -153,6 +157,8 @@ def run(
             f"{len(result.stage3_readiness.calints_inputs)} intact _calints inputs recorded; "
             "run with --through stage3 to create the association and execute Tso3Pipeline."
         )
+    if result.retention is not None:
+        _print_retention_result(result.retention)
     console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
 
 
@@ -183,14 +189,16 @@ def qa(
             console.print(f"  {output}")
 
 
-def _print_segment_result(result: SegmentWorkflowResult) -> None:
+def _print_segment_result(
+    result: SegmentWorkflowResult, *, pruned: set[Path] | None = None
+) -> None:
     console.print(f"[bold]Segment {result.stage1.selected.product.segment_number:03d}[/]")
-    _print_stage1_result(result.stage1)
+    _print_stage1_result(result.stage1, pruned=pruned)
     if result.stage2 is not None:
-        _print_stage2_result(result.stage2)
+        _print_stage2_result(result.stage2, pruned=pruned)
 
 
-def _print_stage1_result(result: Stage1WorkflowResult) -> None:
+def _print_stage1_result(result: Stage1WorkflowResult, *, pruned: set[Path] | None = None) -> None:
     download_action = "reused" if result.download.reused else "downloaded"
     console.print(
         f"Raw input {download_action}: {result.download.path} "
@@ -203,12 +211,14 @@ def _print_stage1_result(result: Stage1WorkflowResult) -> None:
     else:
         console.print(f"[green]Detector1Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
     for output in result.outputs:
-        console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
+        console.print(
+            f"  {output} ({_reported_output_size(output, result.manifest_entry, pruned)})"
+        )
     console.print(f"CRDS context: {result.crds_context}")
     console.print(f"Pipeline log: {result.log_path}")
 
 
-def _print_stage2_result(result: Stage2WorkflowResult) -> None:
+def _print_stage2_result(result: Stage2WorkflowResult, *, pruned: set[Path] | None = None) -> None:
     console.print(f"Stage 2 input from manifest: {result.input_path}")
     if result.status == "skipped":
         console.print("[green]Spec2Pipeline skipped:[/] matching successful manifest run found.")
@@ -220,7 +230,9 @@ def _print_stage2_result(result: Stage2WorkflowResult) -> None:
             if output.name.endswith("_calints.fits")
             else "per-exposure extracted spectrum; not a TSO3 association input"
         )
-        console.print(f"  {output} ({_format_bytes(output.stat().st_size)}); {role}")
+        console.print(
+            f"  {output} ({_reported_output_size(output, result.manifest_entry, pruned)}); {role}"
+        )
     console.print(f"CRDS context: {result.crds_context}")
     console.print(f"Pipeline log: {result.log_path}")
 
@@ -236,6 +248,40 @@ def _print_stage3_result(result: Stage3WorkflowResult) -> None:
         console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
     console.print(f"CRDS context: {result.crds_context}")
     console.print(f"Pipeline log: {result.log_path}")
+
+
+def _reported_output_size(path: Path, manifest_entry: dict, pruned: set[Path] | None) -> str:
+    records = manifest_entry.get("outputs", [])
+    recorded_size = next(
+        (
+            record.get("size_bytes")
+            for record in records
+            if isinstance(record, dict) and record.get("path") == str(path)
+        ),
+        None,
+    )
+    size = recorded_size if isinstance(recorded_size, int) else None
+    if size is None and path.is_file():
+        size = path.stat().st_size
+    summary = _format_bytes(size)
+    if pruned is not None and path in pruned:
+        summary += "; removed by retention"
+    elif not path.exists():
+        summary += "; missing"
+    return summary
+
+
+def _print_retention_result(result: RetentionResult) -> None:
+    console.print(f"Retention: {result.policy}")
+    if result.deleted_paths:
+        console.print(
+            f"Removed {len(result.deleted_paths)} regenerable upstream products "
+            f"({_format_bytes(result.bytes_reclaimed)})"
+        )
+    if result.status == "failed":
+        console.print(f"[yellow]Cleanup failed:[/] {result.reason}")
+    elif result.policy == "final" and not result.deleted_paths:
+        console.print(f"[yellow]Cleanup skipped:[/] {result.reason}")
 
 
 @app.command()
@@ -293,8 +339,11 @@ def _print_plan(
     config: DiscoveryConfig,
     result: DiscoveryResult,
     plans: tuple[DatasetPlan, ...],
+    *,
+    retention: str = "all",
 ) -> None:
     console.print(f"[bold]Reduction plan: {config.query.target}[/]")
+    console.print(f"Retention: {retention}")
     reduction_count = sum(len(plan.reductions) for plan in plans)
     console.print(
         f"{_counted(len(plans), _dataset_noun(result.datasets))} containing "
@@ -369,6 +418,7 @@ def _print_reduction_branch(number: int, reduction_plan: ReductionPlan) -> None:
 def _print_batch_summary(prepared: PreparedBatch) -> None:
     """Show all branch decisions before the first download or pipeline invocation."""
     console.print("[bold]Batch execution plan: planned endpoints[/]")
+    console.print(f"Retention: {prepared.retention}")
     console.print(
         f"{_counted(len(prepared.plans), _dataset_noun(prepared.discovery.datasets))} containing "
         f"{_counted(len(prepared.discovery.exposures), 'exposure')} and "
@@ -399,6 +449,8 @@ def _print_batch_result(result: BatchWorkflowResult) -> None:
                 f"[green]Completed[/] {branch_result.branch.label} "
                 f"through {branch_result.branch.endpoint}."
             )
+            if branch_result.workflow is not None and branch_result.workflow.retention is not None:
+                _print_retention_result(branch_result.workflow.retention)
         else:
             console.print(f"[red]Failed[/] {branch_result.branch.label}: {branch_result.error}")
     if result.failures:

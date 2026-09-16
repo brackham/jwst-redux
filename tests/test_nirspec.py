@@ -296,6 +296,36 @@ def test_g395h_stage3_associations_and_workspaces_remain_detector_separate(
     assert len(roots) == 2
 
 
+def test_g395h_final_retention_prunes_each_detector_branch(tmp_path: Path) -> None:
+    discovery = _discovery("G395H")
+    config = replace(_batch_config(tmp_path, "G395H"), retention="final")
+    prepared = prepare_batch(config, discoverer=lambda _: discovery)
+
+    result = run_batch(
+        config,
+        prepared=prepared,
+        downloader=_Downloader(),
+        detector1_pipeline=_Detector1(),
+        spec2_pipeline=_Spec2(),
+        tso3_pipeline=_Tso3(),
+        context_resolver=lambda _: "jwst_test.pmap",
+    )
+
+    assert not result.failures
+    for item in result.branches:
+        assert item.workflow is not None
+        assert item.workflow.retention is not None
+        assert item.workflow.retention.status == "success"
+        workspace = Workspace.for_selection(
+            config.discovery.output_root, item.branch.config.selection
+        )
+        assert not any(workspace.stage1.glob("*.fits"))
+        assert not any(workspace.stage2.glob("*.fits"))
+        assert any(workspace.stage3.glob("*.fits"))
+        assert item.workflow.stage3 is not None
+        assert item.workflow.stage3.association.path.is_file()
+
+
 def _nirspec_x1dints(path: Path) -> None:
     primary = fits.PrimaryHDU()
     for key, value in {
