@@ -24,8 +24,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
+from astropy.table import Table
 
-QA_SCHEMA_VERSION = "11"
+QA_SCHEMA_VERSION = "13"
 PLOT_DPI = 180
 MAD_TO_SIGMA = 1.4826
 F_LAMBDA_UNIT = u.erg / u.s / u.cm**2 / u.AA
@@ -98,6 +99,29 @@ class SpectralQAConfig:
 
 
 SPECTRAL_QA_CONFIG = SpectralQAConfig()
+
+
+@dataclass(frozen=True)
+class QuicklookFilterConfig:
+    """Conservative time-local rejection for isolated bad integrations."""
+
+    half_window_minutes: float = 10.0
+    robust_sigma: float = 8.0
+    min_local_points: int = 4
+    neighbor_consistency_sigma: float = 3.0
+
+    def as_provenance(self) -> dict[str, Any]:
+        return {
+            "algorithm": "centered local median/MAD with two-sided isolated-point criterion",
+            "half_window_minutes": self.half_window_minutes,
+            "robust_sigma": self.robust_sigma,
+            "min_local_points": self.min_local_points,
+            "neighbor_consistency_sigma": self.neighbor_consistency_sigma,
+            "point_excluded_from_local_estimate": True,
+        }
+
+
+QUICKLOOK_FILTER_CONFIG = QuicklookFilterConfig()
 
 
 @dataclass(frozen=True)
@@ -185,6 +209,31 @@ class SpectralQASelection:
         }
 
 
+@dataclass(frozen=True)
+class FilteredWhiteLightCurve:
+    """One native-cadence QA white-light curve and its filtering decisions."""
+
+    time_mjd: np.ndarray
+    elapsed_time_hours: np.ndarray
+    original_flux_ppt: np.ndarray
+    filtered_flux_ppt: np.ndarray
+    isolated_outlier: np.ndarray
+    rejected: np.ndarray
+    order: int | None = None
+
+
+@dataclass(frozen=True)
+class BinnedWhiteLightCurve:
+    """Populated fixed-time bins from a filtered QA white-light curve."""
+
+    time_mjd: np.ndarray
+    elapsed_time_hours: np.ndarray
+    flux_ppt: np.ndarray
+    counts: np.ndarray
+    bin_index: np.ndarray
+    order: int | None = None
+
+
 def qa_subdirectory(root: Path, product: Path) -> Path:
     """Return a collision-safe QA directory derived from the full product stem."""
     path = root / product.name.removesuffix(".fits").removesuffix(".ecsv")
@@ -212,6 +261,285 @@ def finite_median(values: np.ndarray, axis: int | None = None) -> np.ndarray | f
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         return np.nanmedian(data, axis=axis)
+
+
+def center_finite_median(values: np.ndarray) -> np.ndarray:
+    """Subtract a series' finite median while preserving non-finite samples."""
+    centered = np.asarray(values, dtype=float).copy()
+    finite = np.isfinite(centered)
+    if np.any(finite):
+        centered -= finite_median(centered[finite])
+    return centered
+
+
+def isolated_local_outliers(
+    time_mjd: np.ndarray,
+    flux_ppt: np.ndarray,
+    config: QuicklookFilterConfig = QUICKLOOK_FILTER_CONFIG,
+) -> np.ndarray:
+    """Identify only extreme, two-sided isolated points in a time-local window.
+
+    Times are native absolute day values. For each finite point, the point
+    itself is excluded from a centered local median and scaled-MAD estimate.
+    An extreme residual is rejected only when its nearest finite neighbors on
+    both sides agree locally and are each far from the candidate. Consequently
+    adjacent excursions, boundaries of steps, and one-sided endpoints survive.
+    """
+    times = np.asarray(time_mjd, dtype=float)
+    values = np.asarray(flux_ppt, dtype=float)
+    if times.ndim != 1 or values.ndim != 1 or times.shape != values.shape:
+        raise ValueError(
+            "Quick-look filtering requires matching one-dimensional time and flux arrays."
+        )
+    rejected = np.zeros(values.shape, dtype=bool)
+    usable = np.flatnonzero(np.isfinite(times) & np.isfinite(values))
+    if usable.size < max(config.min_local_points + 1, 3):
+        return rejected
+
+    ordered = usable[np.argsort(times[usable], kind="stable")]
+    half_window_days = config.half_window_minutes / (24.0 * 60.0)
+    for position in range(1, ordered.size - 1):
+        index = ordered[position]
+        local = ordered[np.abs(times[ordered] - times[index]) <= half_window_days]
+        local = local[local != index]
+        if local.size < config.min_local_points:
+            continue
+        previous = ordered[position - 1]
+        following = ordered[position + 1]
+        if (
+            times[index] - times[previous] > half_window_days
+            or times[following] - times[index] > half_window_days
+        ):
+            continue
+
+        center = float(finite_median(values[local]))
+        mad = float(finite_median(np.abs(values[local] - center)))
+        scale_floor = np.finfo(float).eps * max(1.0, abs(center))
+        scale = max(MAD_TO_SIGMA * mad, scale_floor)
+        threshold = config.robust_sigma * scale
+        if abs(values[index] - center) <= threshold:
+            continue
+        if (
+            abs(values[index] - values[previous]) <= threshold
+            or abs(values[index] - values[following]) <= threshold
+        ):
+            continue
+        if (
+            abs(values[previous] - values[following])
+            > config.neighbor_consistency_sigma * scale
+        ):
+            continue
+        rejected[index] = True
+    return rejected
+
+
+def filter_white_light_curve(
+    time_mjd: np.ndarray,
+    flux_ppt: np.ndarray,
+    *,
+    order: int | None = None,
+    reference_time_mjd: float | None = None,
+    config: QuicklookFilterConfig = QUICKLOOK_FILTER_CONFIG,
+) -> FilteredWhiteLightCurve:
+    """Apply isolated-point filtering while retaining every native integration."""
+    times = np.asarray(time_mjd, dtype=float)
+    values = np.asarray(flux_ppt, dtype=float)
+    if times.ndim != 1 or values.ndim != 1 or times.shape != values.shape:
+        raise ValueError(
+            "Quick-look filtering requires matching one-dimensional time and flux arrays."
+        )
+    finite_times = times[np.isfinite(times)]
+    if reference_time_mjd is None:
+        reference = float(np.min(finite_times)) if finite_times.size else np.nan
+    else:
+        reference = float(reference_time_mjd)
+        if not np.isfinite(reference):
+            raise ValueError("Quick-look reference time must be finite.")
+    elapsed = np.full(times.shape, np.nan, dtype=float)
+    if np.isfinite(reference):
+        elapsed[np.isfinite(times)] = (times[np.isfinite(times)] - reference) * 24.0
+
+    isolated = isolated_local_outliers(times, values, config)
+    rejected = ~np.isfinite(times) | ~np.isfinite(values) | isolated
+    filtered = values.copy()
+    filtered[rejected] = np.nan
+    return FilteredWhiteLightCurve(
+        time_mjd=times.copy(),
+        elapsed_time_hours=elapsed,
+        original_flux_ppt=values.copy(),
+        filtered_flux_ppt=filtered,
+        isolated_outlier=isolated,
+        rejected=rejected,
+        order=order,
+    )
+
+
+def bin_filtered_white_light(
+    curve: FilteredWhiteLightCurve, cadence_minutes: float
+) -> BinnedWhiteLightCurve:
+    """Mean finite filtered samples in fixed elapsed-time bins.
+
+    Bin membership is determined from timestamp-derived elapsed time, not row
+    number. Only populated bins are returned, so gaps cannot contribute to or
+    dilute adjacent bins.
+    """
+    cadence = float(cadence_minutes)
+    if not np.isfinite(cadence) or cadence <= 0:
+        raise ValueError("Quick-look cadence must be a positive finite number of minutes.")
+    valid = (
+        ~curve.rejected
+        & np.isfinite(curve.time_mjd)
+        & np.isfinite(curve.elapsed_time_hours)
+        & np.isfinite(curve.filtered_flux_ppt)
+    )
+    if not np.any(valid):
+        empty_float = np.array([], dtype=float)
+        return BinnedWhiteLightCurve(
+            empty_float,
+            empty_float.copy(),
+            empty_float.copy(),
+            np.array([], dtype=int),
+            np.array([], dtype=np.int64),
+            curve.order,
+        )
+
+    times = curve.time_mjd[valid]
+    elapsed = curve.elapsed_time_hours[valid]
+    values = curve.filtered_flux_ppt[valid]
+    bin_index = np.floor(elapsed * 60.0 / cadence + 1e-12).astype(np.int64)
+    unique_bins = np.unique(bin_index)
+    binned_time = np.array([np.mean(times[bin_index == item]) for item in unique_bins])
+    binned_elapsed = np.array([np.mean(elapsed[bin_index == item]) for item in unique_bins])
+    binned_flux = np.array([np.mean(values[bin_index == item]) for item in unique_bins])
+    counts = np.array([np.count_nonzero(bin_index == item) for item in unique_bins], dtype=int)
+    return BinnedWhiteLightCurve(
+        binned_time,
+        binned_elapsed,
+        binned_flux,
+        counts,
+        unique_bins,
+        curve.order,
+    )
+
+
+def write_filtered_white_light(
+    curves: list[FilteredWhiteLightCurve],
+    output: Path,
+    *,
+    cadence_minutes: float,
+    source_mode: str,
+    source_stage: str,
+    config: QuicklookFilterConfig = QUICKLOOK_FILTER_CONFIG,
+) -> Path:
+    """Write native-cadence filtering decisions as a QA-only ECSV product."""
+    if not curves:
+        raise ValueError("At least one white-light curve is required for ECSV output.")
+    include_order = any(curve.order is not None for curve in curves)
+    columns: dict[str, np.ndarray] = {}
+    if include_order:
+        columns["order"] = np.concatenate(
+            [
+                np.full(curve.time_mjd.shape, -1 if curve.order is None else curve.order, dtype=int)
+                for curve in curves
+            ]
+        )
+    columns.update(
+        {
+            "time": np.concatenate([curve.time_mjd for curve in curves]),
+            "elapsed_time_hours": np.concatenate(
+                [curve.elapsed_time_hours for curve in curves]
+            ),
+            "original_flux_ppt": np.concatenate(
+                [curve.original_flux_ppt for curve in curves]
+            ),
+            "filtered_flux_ppt": np.concatenate(
+                [curve.filtered_flux_ppt for curve in curves]
+            ),
+            "isolated_outlier": np.concatenate(
+                [curve.isolated_outlier for curve in curves]
+            ),
+            "rejected": np.concatenate([curve.rejected for curve in curves]),
+        }
+    )
+    table = Table(columns)
+    table["time"].unit = u.day
+    table["elapsed_time_hours"].unit = u.hour
+    table.meta = {
+        "qa_schema_version": QA_SCHEMA_VERSION,
+        "product_type": "jwst-redux QA-only filtered white-light curve; not calibrated science",
+        "normalization": "QA-derived flux in ppt, finite temporal median approximately zero",
+        "time_coordinate": "native x1dints EXTRACT1D mid-time (TDB or MJD, in days)",
+        "outlier_filter": config.as_provenance(),
+        "quicklook_cadence_minutes": float(cadence_minutes),
+        "bin_estimator": "unweighted arithmetic mean of surviving native integrations",
+        "source_mode": source_mode,
+        "source_stage": source_stage,
+    }
+    table.write(output, format="ascii.ecsv", overwrite=True)
+    return output
+
+
+def white_light_quicklook_plot(
+    curves: list[FilteredWhiteLightCurve],
+    title: str,
+    output: Path,
+    *,
+    cadence_minutes: float,
+    colors: dict[int | None, str] | None = None,
+) -> Path:
+    """Plot filtered, time-binned QA curves without bridging empty cadence bins."""
+    fig, axis = plt.subplots(figsize=(10, 4.8))
+    for curve in curves:
+        binned = bin_filtered_white_light(curve, cadence_minutes)
+        x, y = _gap_broken_series(
+            binned.elapsed_time_hours,
+            binned.flux_ppt,
+            binned.bin_index,
+        )
+        label = None if curve.order is None else f"Order {curve.order}"
+        color = None if colors is None else colors.get(curve.order)
+        axis.plot(x, y, marker=".", linewidth=1, color=color, label=label)
+    axis.axhline(0, color="0.4", linewidth=1)
+    axis.set(
+        title=title,
+        xlabel="Elapsed time [hours]",
+        ylabel="QA-derived white-light flux [ppt]",
+    )
+    axis.text(
+        0.99,
+        0.97,
+        f"{cadence_minutes:g} min bins",
+        transform=axis.transAxes,
+        ha="right",
+        va="top",
+        fontsize=8,
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 2},
+    )
+    if any(curve.order is not None for curve in curves):
+        axis.legend(loc="best")
+    return save_figure(fig, output)
+
+
+def _gap_broken_series(
+    elapsed_time_hours: np.ndarray, values: np.ndarray, bin_index: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Insert plotting NaNs where at least one fixed-cadence bin is empty."""
+    times = np.asarray(elapsed_time_hours, dtype=float)
+    flux = np.asarray(values, dtype=float)
+    bins = np.asarray(bin_index, dtype=np.int64)
+    if times.shape != flux.shape or times.shape != bins.shape:
+        raise ValueError("Gap-aware plotting arrays must have matching shapes.")
+    if times.size < 2:
+        return times, flux
+    plot_times: list[float] = [float(times[0])]
+    plot_flux: list[float] = [float(flux[0])]
+    for index in range(1, times.size):
+        if bins[index] - bins[index - 1] > 1:
+            plot_times.append(np.nan)
+            plot_flux.append(np.nan)
+        plot_times.append(float(times[index]))
+        plot_flux.append(float(flux[index]))
+    return np.asarray(plot_times), np.asarray(plot_flux)
 
 
 def valid_flux(spectrum: Spectrum) -> np.ndarray:
@@ -363,12 +691,13 @@ def elapsed_hours(spectra: list[Spectrum]) -> np.ndarray:
 
 
 def relative_flux_ppt(flux: np.ndarray) -> np.ndarray:
-    """Return per-wavelength deviations from the temporal median in ppt."""
+    """Return deviations from the finite temporal median along axis 0 in ppt."""
     values = np.asarray(flux, dtype=float)
-    median = finite_median(values, axis=0)
+    median = finite_median(np.where(np.isfinite(values), values, np.nan), axis=0)
+    baseline = np.broadcast_to(median, values.shape)
     result = np.full_like(values, np.nan)
-    valid = np.isfinite(values) & np.isfinite(median)[None, :] & (median[None, :] != 0)
-    result[valid] = 1e3 * (values[valid] / np.broadcast_to(median, values.shape)[valid] - 1)
+    valid = np.isfinite(values) & np.isfinite(baseline) & (baseline != 0)
+    result[valid] = 1e3 * (values[valid] / baseline[valid] - 1)
     return result
 
 
@@ -589,7 +918,14 @@ def spectra_from_x1dints(
             time_name = next(
                 (
                     names.get(key)
-                    for key in ("TDB-MID", "MJD-AVG", "TDB_MID", "MJD_AVG")
+                    for key in (
+                        "TDB-MID",
+                        "MID_TDB",
+                        "TDB_MID",
+                        "MJD-AVG",
+                        "MID_TIME_MJD",
+                        "MJD_AVG",
+                    )
                     if names.get(key)
                 ),
                 None,

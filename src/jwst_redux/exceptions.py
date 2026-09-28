@@ -27,3 +27,7 @@ class DownloadError(JWSTReduxError):
 
 class PipelineExecutionError(JWSTReduxError):
     """Raised when an official pipeline run does not produce valid outputs."""
+
+
+class QAUnavailableError(JWSTReduxError):
+    """Raised when no successful local pipeline products are available for QA."""

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from jwst_redux.config import (
+    DEFAULT_QUICKLOOK_CADENCE_MINUTES,
     load_batch_config,
     load_config,
     load_discovery_config,
@@ -42,6 +43,36 @@ def test_validate_public_nirspec_batch_config() -> None:
     assert g395h.endpoint == "planned"
     assert g395h.failure_policy == "continue"
     assert g395h.retention == "all"
+    assert g395h.quicklook_cadence_minutes == DEFAULT_QUICKLOOK_CADENCE_MINUTES
+
+
+def test_quicklook_cadence_can_be_overridden_in_yaml(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "configs" / "toi3884-bots-g395h.yaml"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "qa:\n  enabled: true", "qa:\n  enabled: true\n  quicklook:\n    cadence_minutes: 3.5"
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_batch_config(config_path).quicklook_cadence_minutes == 3.5
+
+
+@pytest.mark.parametrize("value", ["0", "-1", ".nan", ".inf", "false", "not-a-number"])
+def test_invalid_quicklook_cadence_fails_clearly(tmp_path: Path, value: str) -> None:
+    source = Path(__file__).parents[1] / "configs" / "toi3884-bots-g395h.yaml"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "qa:\n  enabled: true",
+            f"qa:\n  enabled: true\n  quicklook:\n    cadence_minutes: {value}",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match=r"qa\.quicklook\.cadence_minutes.*positive"):
+        load_batch_config(config_path)
 
 
 def test_output_root_expands_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

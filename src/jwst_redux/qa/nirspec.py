@@ -14,7 +14,9 @@ from .common import (
     F_LAMBDA_LABEL,
     SpectralQASelection,
     Spectrum,
+    center_finite_median,
     elapsed_hours,
+    filter_white_light_curve,
     finite_median,
     flux_to_f_lambda,
     native_spectral_stack,
@@ -28,6 +30,8 @@ from .common import (
     spectra_from_x1dints,
     spectral_qa_selection,
     spectroscopic_time_series_display,
+    white_light_quicklook_plot,
+    write_filtered_white_light,
 )
 
 
@@ -43,7 +47,12 @@ class OfficialWhiteLight:
 
 
 def generate(
-    path: Path, output_dir: Path, *, stage: str, white_light_path: Path | None = None
+    path: Path,
+    output_dir: Path,
+    *,
+    stage: str,
+    white_light_path: Path | None = None,
+    quicklook_cadence_minutes: float = 2.0,
 ) -> tuple[Path, ...]:
     """Create BOTS diagnostics on the native detector wavelength grid."""
     groups, header, flux_unit, _ = spectra_from_x1dints(path)
@@ -56,20 +65,44 @@ def generate(
     if stack is None:
         raise ValueError("NIRSpec/BOTS QA requires integrations on one shared native grid.")
     selection = spectral_qa_selection(*stack)
+    qa_white_light = qa_white_light_ppt(selection)
+    native_time = np.array(
+        [np.nan if item.time_mjd is None else item.time_mjd for item in spectra], dtype=float
+    )
+    filtered_white_light = filter_white_light_curve(native_time, qa_white_light)
     return (
         _spectra_plot(spectra, selection, title, flux_unit, output_dir / "spectra.png"),
         _white_light_plot(
             spectra,
             selection,
+            qa_white_light,
             title,
             output_dir / "white_light.png",
             detector=detector,
             official=white_light_path,
         ),
+        white_light_quicklook_plot(
+            [filtered_white_light],
+            title,
+            output_dir / "white_light_quicklook.png",
+            cadence_minutes=quicklook_cadence_minutes,
+        ),
+        write_filtered_white_light(
+            [filtered_white_light],
+            output_dir / "white_light_filtered.ecsv",
+            cadence_minutes=quicklook_cadence_minutes,
+            source_mode="NIRSpec/BOTS",
+            source_stage=stage,
+        ),
         _time_series_plot(selection, spectra, title, output_dir / "spectroscopic_time_series.png"),
         _scatter_plot(selection, title, output_dir / "scatter_spectrum.png"),
         _difference_plot(selection, spectra, title, output_dir / "point_to_point_difference.png"),
     )
+
+
+def qa_white_light_ppt(selection: SpectralQASelection) -> np.ndarray:
+    """Return the same median-zeroed robust common mode used by all BOTS QA."""
+    return center_finite_median(qa_common_mode_ppt(selection))
 
 
 def _masked_stack(spectra: list[Spectrum]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -135,6 +168,7 @@ def _spectra_plot(
 def _white_light_plot(
     spectra: list[Spectrum],
     selection: SpectralQASelection,
+    qa_common_mode: np.ndarray,
     title: str,
     output: Path,
     *,
@@ -145,7 +179,7 @@ def _white_light_plot(
     rows = 2 if official_curve is not None else 1
     fig, axes = plt.subplots(rows, 1, figsize=(10, 4.5 * rows), squeeze=False)
     proxy_axis = axes[0, 0]
-    proxy_axis.plot(elapsed_hours(spectra), qa_common_mode_ppt(selection), marker=".", linewidth=1)
+    proxy_axis.plot(elapsed_hours(spectra), qa_common_mode, marker=".", linewidth=1)
     proxy_axis.axhline(0, color="0.4", linewidth=1)
     proxy_axis.set(
         title=title,

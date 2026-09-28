@@ -21,9 +21,12 @@ from jwst_redux.qa import soss
 from jwst_redux.qa.common import (
     F_LAMBDA_LABEL,
     QA_SCHEMA_VERSION,
+    QUICKLOOK_FILTER_CONFIG,
     SPECTROSCOPIC_TIME_SERIES_CONFIG,
     Spectrum,
+    bin_filtered_white_light,
     channel_classification_label,
+    filter_white_light_curve,
     flux_to_f_lambda,
     native_spectral_stack,
     point_to_point_difference_ppt,
@@ -36,6 +39,7 @@ from jwst_redux.qa.common import (
     spectroscopic_time_series_display,
     spectroscopic_time_series_science_quality_mask,
     spectroscopic_time_series_validity_mask,
+    write_filtered_white_light,
 )
 from jwst_redux.qa.soss import (
     POINT_TO_POINT_COLORBAR_LABEL,
@@ -146,11 +150,28 @@ def test_soss_qa_uses_spectroscopic_time_series_product_name(tmp_path: Path) -> 
     assert {item.name for item in generated} == {
         "spectra.png",
         "white_light.png",
+        "white_light_quicklook.png",
+        "white_light_filtered.ecsv",
         "spectroscopic_time_series.png",
         "scatter_spectrum.png",
         "point_to_point_difference.png",
     }
     assert all(item.stat().st_size > 0 for item in generated)
+    filtered = Table.read(output / "white_light_filtered.ecsv", format="ascii.ecsv")
+    assert filtered.colnames == [
+        "order",
+        "time",
+        "elapsed_time_hours",
+        "original_flux_ppt",
+        "filtered_flux_ppt",
+        "isolated_outlier",
+        "rejected",
+    ]
+    assert set(filtered["order"]) == {1, 2}
+    assert len(filtered) == 4
+    assert filtered.meta["qa_schema_version"] == QA_SCHEMA_VERSION
+    assert filtered.meta["quicklook_cadence_minutes"] == 2.0
+    assert "not calibrated science" in filtered.meta["product_type"]
 
 
 def test_stage3_soss_qa_creates_scatter_and_point_to_point_products(tmp_path: Path) -> None:
@@ -172,11 +193,91 @@ def test_stage3_soss_qa_creates_scatter_and_point_to_point_products(tmp_path: Pa
     assert {item.name for item in generated} == {
         "spectra.png",
         "white_light.png",
+        "white_light_quicklook.png",
+        "white_light_filtered.ecsv",
         "spectroscopic_time_series.png",
         "scatter_spectrum.png",
         "point_to_point_difference.png",
     }
     assert all(item.stat().st_size > 0 for item in generated)
+
+
+def _time_mjd_at_minute_cadence(size: int) -> np.ndarray:
+    return 60_000.0 + np.arange(size, dtype=float) / (24.0 * 60.0)
+
+
+def test_quicklook_filter_rejects_one_extreme_isolated_integration() -> None:
+    values = np.zeros(15)
+    values[7] = 100.0
+
+    filtered = filter_white_light_curve(_time_mjd_at_minute_cadence(values.size), values)
+
+    assert np.flatnonzero(filtered.isolated_outlier).tolist() == [7]
+    assert filtered.rejected[7]
+    assert np.isnan(filtered.filtered_flux_ppt[7])
+    assert filtered.original_flux_ppt[7] == 100.0
+
+
+def test_filtered_ecsv_retains_rejected_native_integration(tmp_path: Path) -> None:
+    values = np.zeros(15)
+    values[7] = 100.0
+    filtered = filter_white_light_curve(_time_mjd_at_minute_cadence(values.size), values)
+
+    path = write_filtered_white_light(
+        [filtered],
+        tmp_path / "white_light_filtered.ecsv",
+        cadence_minutes=2.0,
+        source_mode="test mode",
+        source_stage="test stage",
+    )
+    table = Table.read(path, format="ascii.ecsv")
+
+    assert len(table) == values.size
+    assert table["original_flux_ppt"][7] == 100.0
+    assert bool(table["rejected"][7])
+    assert np.isnan(table["filtered_flux_ppt"][7])
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.r_[np.zeros(4), np.full(5, -30.0), np.zeros(6)],
+        np.r_[np.zeros(5), np.full(3, 25.0), np.zeros(7)],
+        np.r_[np.zeros(3), np.full(3, -30.0), np.full(3, -18.0), np.full(3, -30.0), np.zeros(3)],
+        np.r_[np.zeros(7), np.full(8, 20.0)],
+    ],
+    ids=["transit", "flare", "spot-crossing", "baseline-step"],
+)
+def test_quicklook_filter_preserves_multi_point_and_sustained_structure(
+    values: np.ndarray,
+) -> None:
+    filtered = filter_white_light_curve(_time_mjd_at_minute_cadence(values.size), values)
+
+    assert not np.any(filtered.isolated_outlier)
+    np.testing.assert_allclose(filtered.filtered_flux_ppt, values)
+
+
+def test_quicklook_filter_handles_nonfinite_samples_without_dropping_rows() -> None:
+    values = np.array([0.0, 0.0, np.nan, 0.0, np.inf, 0.0, 0.0])
+    filtered = filter_white_light_curve(_time_mjd_at_minute_cadence(values.size), values)
+
+    assert len(filtered.original_flux_ppt) == values.size
+    assert filtered.rejected.tolist() == [False, False, True, False, True, False, False]
+    assert np.isnan(filtered.filtered_flux_ppt[[2, 4]]).all()
+
+
+def test_quicklook_binning_uses_timestamps_and_omits_empty_gap_bins() -> None:
+    minutes = np.array([0.0, 0.2, 1.8, 3.1, 30.0])
+    times = 60_000.0 + minutes / (24.0 * 60.0)
+    filtered = filter_white_light_curve(times, np.array([1.0, 3.0, 5.0, 8.0, 20.0]))
+
+    binned = bin_filtered_white_light(filtered, cadence_minutes=2.0)
+
+    np.testing.assert_allclose(binned.flux_ppt, [3.0, 8.0, 20.0])
+    assert binned.counts.tolist() == [3, 1, 1]
+    assert binned.bin_index.tolist() == [0, 1, 15]
+    np.testing.assert_allclose(binned.elapsed_time_hours * 60.0, [2.0 / 3.0, 3.1, 30.0])
+    assert len(binned.flux_ppt) == 3
 
 
 def test_white_light_columns_and_spectroscopic_time_series_normalization_are_discovered(
@@ -197,12 +298,27 @@ def test_white_light_columns_and_spectroscopic_time_series_normalization_are_dis
     ppt = relative_flux_ppt(np.array([[1.0, np.nan], [3.0, np.nan], [2.0, np.nan]]))
     assert np.allclose(ppt[:, 0], [-500, 500, 0])
     assert np.isnan(ppt[:, 1]).all()
+    series_ppt = relative_flux_ppt(np.array([1.0, 3.0, 2.0, np.nan, np.inf]))
+    np.testing.assert_allclose(series_ppt[:3], [-500, 500, 0])
+    assert np.isnan(series_ppt[3:]).all()
 
 
 def test_white_light_plot_has_combined_and_fixed_order_panels(monkeypatch, tmp_path: Path) -> None:
-    path = tmp_path / "x1dints.fits"
-    _x1dints(path)
-    groups, header, _, _ = spectra_from_x1dints(path)
+    wavelength = np.array([1.0, 2.0])
+    groups = {
+        1: [
+            Spectrum(1, index + 1, 60_000 + index / 1000, wavelength, flux, None)
+            for index, flux in enumerate(
+                [np.array([np.nan, 2.0]), np.array([2.0, 2.0]), np.array([4.0, 4.0])]
+            )
+        ],
+        2: [
+            Spectrum(2, index + 1, 60_000 + index / 1000, wavelength, flux, None)
+            for index, flux in enumerate(
+                [np.array([100.0, 100.0]), np.array([90.0, 90.0]), np.array([80.0, 80.0])]
+            )
+        ],
+    }
     captured = []
 
     def capture(figure, output: Path) -> Path:
@@ -210,10 +326,10 @@ def test_white_light_plot_has_combined_and_fixed_order_panels(monkeypatch, tmp_p
         return output
 
     monkeypatch.setattr(soss, "save_figure", capture)
-    soss.white_light_proxy_plot(groups, soss.soss_title(header, "Stage 2"), tmp_path / "white.png")
+    soss.white_light_proxy_plot(groups, "Stage 2 SOSS", tmp_path / "white.png")
 
     assert [axis.get_title() for axis in captured] == [
-        soss.soss_title(header, "Stage 2"),
+        "Stage 2 SOSS",
         "Order 1",
         "Order 2",
         "Order 3",
@@ -222,6 +338,46 @@ def test_white_light_plot_has_combined_and_fixed_order_panels(monkeypatch, tmp_p
     assert captured[1].get_lines()[0].get_color() == "C0"
     assert captured[2].get_lines()[0].get_color() == "C1"
     assert len(captured[3].get_lines()) == 1  # Reference line only: no Order 3 data.
+    expected = {
+        1: np.array([-500.0, 0.0, 1000.0]),
+        2: 1e3 * (np.array([200.0, 180.0, 160.0]) / 180.0 - 1.0),
+    }
+    for order, axis in enumerate(captured[1:3], start=1):
+        plotted = axis.lines[0].get_ydata()
+        np.testing.assert_allclose(plotted, expected[order])
+        np.testing.assert_allclose(captured[0].lines[order - 1].get_ydata(), plotted)
+        assert np.median(plotted[np.isfinite(plotted)]) == pytest.approx(0.0)
+    assert not np.allclose(expected[1], expected[2])
+    assert all(axis.get_ylabel() == "QA-derived white-light proxy [ppt]" for axis in captured)
+    for axis in captured:
+        np.testing.assert_allclose(axis.lines[-1].get_ydata(), [0.0, 0.0])
+
+
+def test_official_soss_white_light_plot_keeps_existing_normalization(
+    monkeypatch, tmp_path: Path
+) -> None:
+    official = {
+        1: (np.array([0.0, 1.0, 2.0]), np.array([10.0, 12.0, 14.0])),
+        2: (np.array([0.0, 1.0, 2.0]), np.array([8.0, 9.0, 10.0])),
+    }
+    captured = []
+
+    def capture(figure, output: Path) -> Path:
+        captured.extend(figure.axes)
+        return output
+
+    monkeypatch.setattr(soss, "save_figure", capture)
+    soss.white_light_proxy_plot({}, "Stage 3 SOSS", tmp_path / "white.png", official=official)
+
+    for order, axis in enumerate(captured[1:3], start=1):
+        expected = official[order][1] / np.median(official[order][1])
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), expected)
+        np.testing.assert_allclose(captured[0].lines[order - 1].get_ydata(), expected)
+    assert all(
+        axis.get_ylabel() == "Normalized official TSO3 white-light flux" for axis in captured
+    )
+    for axis in captured:
+        np.testing.assert_allclose(axis.lines[-1].get_ydata(), [1.0, 1.0])
 
 
 def test_f_lambda_conversion_and_spectroscopic_time_series_guardrails() -> None:
@@ -448,6 +604,8 @@ def test_soss_qa_regenerates_new_outputs_from_local_pipeline_products_only(tmp_p
         assert {path.name for path in result.outputs} == {
             "spectra.png",
             "white_light.png",
+            "white_light_quicklook.png",
+            "white_light_filtered.ecsv",
             "spectroscopic_time_series.png",
             "scatter_spectrum.png",
             "point_to_point_difference.png",
@@ -459,6 +617,20 @@ def test_soss_qa_regenerates_new_outputs_from_local_pipeline_products_only(tmp_p
     assert manifest.entry("stage3-local")["status"] == "success"
     classification = results[0].manifest_entry["plotting_parameters"]["soss_channel_classification"]
     assert "not the default display mask" in classification["science_quality"]
+    quicklook = results[0].manifest_entry["plotting_parameters"]["quicklook"]
+    assert quicklook["cadence_minutes"] == 2.0
+    assert quicklook["outlier_filter"] == QUICKLOOK_FILTER_CONFIG.as_provenance()
+    assert {record["path"] for record in results[0].manifest_entry["outputs"]} == {
+        str(path) for path in results[0].outputs
+    }
+
+    forced = generate_qa(config, stages=("stage2",), force=True)
+    assert forced[0].status == "success"
+    assert {path.name for path in forced[0].outputs} >= {
+        "white_light_quicklook.png",
+        "white_light_filtered.ecsv",
+    }
+    assert manifest.entry("stage2-local")["status"] == "success"
 
 
 def test_qa_provenance_failure_and_stale_rebuild_do_not_change_pipeline_status(

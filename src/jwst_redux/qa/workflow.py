@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import WriteConfig
-from ..exceptions import JWSTReduxError
+from ..exceptions import JWSTReduxError, QAUnavailableError
 from ..modes import BOTS_MODE, SOSS_MODE
 from ..provenance import ManifestStore, make_run_key, utc_now
 from ..workspace import Workspace
@@ -20,6 +20,7 @@ from . import stage3 as stage3_qa
 from .checks import write_extracted_spectrum_report
 from .common import (
     F_LAMBDA_UNIT,
+    QUICKLOOK_FILTER_CONFIG,
     SPECTRAL_QA_CONFIG,
     SPECTROSCOPIC_TIME_SERIES_CONFIG,
     qa_subdirectory,
@@ -39,7 +40,10 @@ SOSS_CHANNEL_CLASSIFICATION: dict[str, str] = {
 QA_PARAMETER_BASE: dict[str, Any] = {
     "stage1": {"image_limits": "finite 1st/99th percentiles", "scatter": "1.4826 * MAD"},
     "stage2": {
-        "white_light": "sum finite DQ=0 extracted samples",
+        "white_light": (
+            "per-order sum of finite DQ=0 extracted samples, expressed in ppt relative to each "
+            "curve's finite temporal median"
+        ),
         "spectra": "native spectral density converted to F_lambda [W m^-2 um^-1] for display",
         "spectroscopic_time_series": {
             "quantity": "ppt relative to temporal median",
@@ -107,7 +111,7 @@ def generate_qa(
         config.discovery.output_root.resolve(), config.selection
     )
     if not workspace.manifest.is_file():
-        raise JWSTReduxError(f"Cannot generate QA without a manifest: {workspace.manifest}")
+        raise QAUnavailableError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     results: list[QAResult] = []
@@ -127,7 +131,9 @@ def generate_qa(
                 )
             )
     if not results:
-        raise JWSTReduxError("No successful pipeline products matched the selected dataset/stage.")
+        raise QAUnavailableError(
+            "No successful pipeline products matched the selected dataset/stage."
+        )
     return tuple(results)
 
 
@@ -291,6 +297,7 @@ def _plot(
             output_dir,
             stage=stage.replace("stage", "Stage "),
             white_light_path=inputs[1] if stage == "stage3" else None,
+            quicklook_cadence_minutes=_quicklook_cadence(plotting_parameters),
         )
         report = write_extracted_spectrum_report(
             inputs[0],
@@ -303,10 +310,19 @@ def _plot(
     if mode != SOSS_MODE:
         raise JWSTReduxError(f"No extracted-spectrum QA implementation for {mode[0]}/{mode[1]}.")
     if stage == "stage2":
-        plots = stage2_qa.generate(inputs[0], output_dir, _wavelength_windows(plotting_parameters))
+        plots = stage2_qa.generate(
+            inputs[0],
+            output_dir,
+            _wavelength_windows(plotting_parameters),
+            quicklook_cadence_minutes=_quicklook_cadence(plotting_parameters),
+        )
     else:
         plots = stage3_qa.generate(
-            inputs[0], inputs[1], output_dir, _wavelength_windows(plotting_parameters)
+            inputs[0],
+            inputs[1],
+            output_dir,
+            _wavelength_windows(plotting_parameters),
+            quicklook_cadence_minutes=_quicklook_cadence(plotting_parameters),
         )
     report = write_extracted_spectrum_report(
         inputs[0],
@@ -334,6 +350,16 @@ def _qa_parameters(config: WriteConfig, stage: str) -> dict[str, Any]:
         }
     )
     mode = (config.discovery.query.instrument, config.discovery.query.exposure_type)
+    if stage in {"stage2", "stage3"}:
+        parameters["quicklook"] = {
+            "cadence_minutes": config.quicklook_cadence_minutes,
+            "normalization": "QA-derived white light in ppt; finite temporal median approximately zero",
+            "outlier_filter": QUICKLOOK_FILTER_CONFIG.as_provenance(),
+            "binning": (
+                "fixed timestamp-derived elapsed-time bins; unweighted arithmetic mean; "
+                "empty bins absent"
+            ),
+        }
     if stage in {"stage2", "stage3"} and mode == SOSS_MODE:
         time_series = dict(parameters["spectroscopic_time_series"])
         time_series["wavelength_windows_microns"] = {
@@ -347,7 +373,7 @@ def _qa_parameters(config: WriteConfig, stage: str) -> dict[str, Any]:
         parameters["white_light"] = {
             "primary": (
                 "median across QA-valid channels after normalization by each channel's "
-                "temporal median; plotted as 1000 * (relative_flux - 1) ppt"
+                "temporal median; plotted in ppt and centered on its finite temporal median"
             ),
             "official_comparison": (
                 "JWST WhiteLightStep wavelength sum, shown separately with an independent scale"
@@ -364,6 +390,11 @@ def _wavelength_windows(plotting_parameters: dict[str, Any]) -> dict[int, tuple[
     return {
         int(order): (float(bounds[0]), float(bounds[1])) for order, bounds in configured.items()
     }
+
+
+def _quicklook_cadence(plotting_parameters: dict[str, Any]) -> float:
+    """Recover the validated quick-look cadence from run-key provenance."""
+    return float(plotting_parameters["quicklook"]["cadence_minutes"])
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:

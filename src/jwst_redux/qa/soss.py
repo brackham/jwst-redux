@@ -13,10 +13,12 @@ from .common import (
     Spectrum,
     channel_classification_label,
     elapsed_hours,
+    filter_white_light_curve,
     finite_median,
     flux_to_f_lambda,
     point_to_point_difference_ppt,
     product_title,
+    relative_flux_ppt,
     relative_scatter_ppt,
     robust_limits,
     robust_ppt_limit,
@@ -25,6 +27,8 @@ from .common import (
     spectroscopic_time_series_science_quality_mask,
     spectroscopic_time_series_validity_mask,
     valid_flux,
+    white_light_quicklook_plot,
+    write_filtered_white_light,
 )
 
 SPECTROSCOPIC_TIME_SERIES_COLORBAR_LABEL = "Relative flux [ppt]"
@@ -133,14 +137,8 @@ def white_light_proxy_plot(
         }
         ylabel = "Normalized official TSO3 white-light flux"
     else:
-        curves = {}
-        for order, spectra in groups.items():
-            values = np.array(
-                [np.nansum(np.where(valid_flux(item), item.flux, np.nan)) for item in spectra]
-            )
-            baseline = finite_median(values)
-            curves[order] = (elapsed_hours(spectra), values / baseline)
-        ylabel = "Normalized QA-derived white-light proxy"
+        curves = qa_white_light_curves(groups)
+        ylabel = "QA-derived white-light proxy [ppt]"
 
     for order, (times, normalized_flux) in sorted(curves.items()):
         combined.plot(
@@ -176,8 +174,9 @@ def white_light_proxy_plot(
             )
         axis.set(title=f"Order {order}", ylabel=ylabel)
 
+    reference = 1 if official is not None else 0
     for axis in axes[:, 0]:
-        axis.axhline(1, color="0.4", linewidth=1)
+        axis.axhline(reference, color="0.4", linewidth=1)
     if official is None:
         combined.text(
             0.01,
@@ -189,6 +188,72 @@ def white_light_proxy_plot(
         )
     order_axes[-1].set_xlabel("Elapsed time [hours]")
     return save_figure(fig, output)
+
+
+def qa_white_light_curves(
+    groups: dict[int, list[Spectrum]],
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Return per-order elapsed time and median-zeroed SOSS QA flux proxies."""
+    curves: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for order, spectra in groups.items():
+        values = np.array(
+            [np.nansum(np.where(valid_flux(item), item.flux, np.nan)) for item in spectra]
+        )
+        curves[order] = (elapsed_hours(spectra), relative_flux_ppt(values))
+    return curves
+
+
+def white_light_quicklook_products(
+    groups: dict[int, list[Spectrum]],
+    title: str,
+    output_dir: Path,
+    *,
+    cadence_minutes: float,
+    stage: str,
+) -> tuple[Path, Path]:
+    """Create per-order filtered data and a binned SOSS morphology plot."""
+    qa_curves = qa_white_light_curves(groups)
+    all_times = np.concatenate(
+        [
+            np.array(
+                [np.nan if item.time_mjd is None else item.time_mjd for item in spectra],
+                dtype=float,
+            )
+            for spectra in groups.values()
+        ]
+    )
+    finite_times = all_times[np.isfinite(all_times)]
+    reference_time = float(np.min(finite_times)) if finite_times.size else None
+    filtered = []
+    for order, spectra in sorted(groups.items()):
+        native_time = np.array(
+            [np.nan if item.time_mjd is None else item.time_mjd for item in spectra], dtype=float
+        )
+        filtered.append(
+            filter_white_light_curve(
+                native_time,
+                qa_curves[order][1],
+                order=order,
+                reference_time_mjd=reference_time,
+            )
+        )
+    plot = white_light_quicklook_plot(
+        filtered,
+        title,
+        output_dir / "white_light_quicklook.png",
+        cadence_minutes=cadence_minutes,
+        colors={
+            order: SOSS_ORDER_COLORS.get(order, f"C{order - 1}") for order in groups
+        },
+    )
+    table = write_filtered_white_light(
+        filtered,
+        output_dir / "white_light_filtered.ecsv",
+        cadence_minutes=cadence_minutes,
+        source_mode="NIRISS/SOSS",
+        source_stage=stage,
+    )
+    return plot, table
 
 
 def plot_spectroscopic_time_series(

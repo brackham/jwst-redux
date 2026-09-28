@@ -384,7 +384,15 @@ def test_nirspec_qa_dispatch_and_detector_coverage_report(monkeypatch, tmp_path:
     )
     called: list[str] = []
 
-    def fake_generate(path_arg, output_dir, *, stage, white_light_path=None):
+    def fake_generate(
+        path_arg,
+        output_dir,
+        *,
+        stage,
+        white_light_path=None,
+        quicklook_cadence_minutes=2.0,
+    ):
+        assert quicklook_cadence_minutes == 2.0
         called.append(stage)
         output = output_dir / "nirspec.png"
         output.write_bytes(b"png")
@@ -473,6 +481,10 @@ def test_nirspec_stage3_plots_reject_extreme_channels_and_compare_official_white
             "whitelight_flux_NRS1": np.sum(flux, axis=1),
         }
     ).write(whtlt, format="ascii.ecsv")
+    uncentered_proxy = 1e3 * (common_mode - 1) + 4.0
+    uncentered_proxy[1] = np.nan
+    uncentered_proxy[2] = np.inf
+    monkeypatch.setattr(nirspec, "qa_common_mode_ppt", lambda selection: uncentered_proxy.copy())
     figures = []
 
     def capture(figure, output: Path) -> Path:
@@ -493,12 +505,77 @@ def test_nirspec_stage3_plots_reject_extreme_channels_and_compare_official_white
     assert spectra_axis.get_ylim()[1] < 1e-12
 
     proxy_axis, official_axis = figures[1].axes
-    assert np.allclose(proxy_axis.lines[0].get_ydata(), 1e3 * (common_mode - 1))
+    plotted_proxy = proxy_axis.lines[0].get_ydata()
+    finite_proxy = np.isfinite(uncentered_proxy)
+    expected_proxy = uncentered_proxy - np.median(uncentered_proxy[finite_proxy])
+    np.testing.assert_allclose(plotted_proxy, expected_proxy, equal_nan=True)
+    assert np.median(plotted_proxy[np.isfinite(plotted_proxy)]) == pytest.approx(0.0)
+    assert np.isnan(plotted_proxy[1])
+    assert np.isposinf(plotted_proxy[2])
     assert proxy_axis.get_ylabel() == "Robust QA common mode [ppt]"
     assert "Official JWST WhiteLightStep" in official_axis.get_title()
-    assert np.ptp(official_axis.lines[0].get_ydata()) > 500
+    official_flux = np.sum(flux, axis=1)
+    expected_official = 1e3 * (official_flux / np.median(official_flux) - 1.0)
+    np.testing.assert_allclose(official_axis.lines[0].get_ydata(), expected_official)
+    assert np.ptp(expected_official) > 500
 
     official = nirspec.read_official_white_light(whtlt, "NRS1")
     assert official is not None
     assert official.time_column == "BJD_TDB_NRS1"
     assert official.flux_column == "whitelight_flux_NRS1"
+
+
+def test_nirspec_stage2_qa_common_mode_is_median_centered(monkeypatch, tmp_path: Path) -> None:
+    x1dints = tmp_path / "g395m_nrs1_x1dints.fits"
+    common_mode, _ = _pathological_nirspec_x1dints(x1dints)
+    uncentered_proxy = 1e3 * (common_mode - 1) + 4.0
+    monkeypatch.setattr(nirspec, "qa_common_mode_ppt", lambda selection: uncentered_proxy.copy())
+    figures = []
+
+    def capture(figure, output: Path) -> Path:
+        figures.append(figure)
+        return output
+
+    monkeypatch.setattr(nirspec, "save_figure", capture)
+    nirspec.generate(x1dints, tmp_path, stage="Stage 2")
+
+    plotted_proxy = figures[1].axes[0].lines[0].get_ydata()
+    expected = uncentered_proxy - np.median(uncentered_proxy)
+    np.testing.assert_allclose(plotted_proxy, expected)
+    assert np.median(plotted_proxy) == pytest.approx(0.0)
+
+
+def test_nirspec_quicklook_plot_and_native_filtered_curve_are_written(tmp_path: Path) -> None:
+    x1dints = tmp_path / "g395m_nrs1_x1dints.fits"
+    common_mode, _ = _pathological_nirspec_x1dints(x1dints)
+
+    generated = nirspec.generate(
+        x1dints,
+        tmp_path,
+        stage="Stage 2",
+        quicklook_cadence_minutes=3.0,
+    )
+
+    assert {path.name for path in generated} == {
+        "spectra.png",
+        "white_light.png",
+        "white_light_quicklook.png",
+        "white_light_filtered.ecsv",
+        "spectroscopic_time_series.png",
+        "scatter_spectrum.png",
+        "point_to_point_difference.png",
+    }
+    table = Table.read(tmp_path / "white_light_filtered.ecsv", format="ascii.ecsv")
+    assert "order" not in table.colnames
+    assert len(table) == common_mode.size
+    assert table.colnames == [
+        "time",
+        "elapsed_time_hours",
+        "original_flux_ppt",
+        "filtered_flux_ppt",
+        "isolated_outlier",
+        "rejected",
+    ]
+    assert table.meta["quicklook_cadence_minutes"] == 3.0
+    assert table.meta["source_mode"] == "NIRSpec/BOTS"
+    assert not np.any(table["rejected"])

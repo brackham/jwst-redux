@@ -16,6 +16,7 @@ DEFAULT_SOSS_WAVELENGTH_WINDOWS: dict[int, tuple[float, float]] = {
     2: (0.60, 1.00),
     3: (0.70, 0.95),
 }
+DEFAULT_QUICKLOOK_CADENCE_MINUTES = 2.0
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class WriteConfig:
     overwrite: bool
     retention: str = "all"
     qa_enabled: bool = False
+    quicklook_cadence_minutes: float = DEFAULT_QUICKLOOK_CADENCE_MINUTES
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     )
@@ -113,6 +115,7 @@ class BatchConfig:
     failure_policy: str
     retention: str = "all"
     qa_enabled: bool = False
+    quicklook_cadence_minutes: float = DEFAULT_QUICKLOOK_CADENCE_MINUTES
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     )
@@ -190,6 +193,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
     if not isinstance(qa_enabled, bool):
         raise ConfigurationError("Configuration field 'qa.enabled' must be boolean.")
     soss_wavelength_windows = _soss_wavelength_windows(qa)
+    quicklook_cadence_minutes = _quicklook_cadence_minutes(qa)
 
     overrides = pipeline.get("overrides", {})
     if not isinstance(overrides, dict):
@@ -236,6 +240,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         overwrite=overwrite,
         retention=_retention_policy(options),
         qa_enabled=qa_enabled,
+        quicklook_cadence_minutes=quicklook_cadence_minutes,
         soss_wavelength_windows=soss_wavelength_windows,
     )
 
@@ -292,6 +297,7 @@ def load_batch_config(path: str | Path) -> BatchConfig:
         failure_policy=failure_policy,
         retention=_retention_policy(options),
         qa_enabled=qa_enabled,
+        quicklook_cadence_minutes=_quicklook_cadence_minutes(qa),
         soss_wavelength_windows=_soss_wavelength_windows(qa),
     )
 
@@ -310,6 +316,7 @@ def write_config_for_exposure(
         overwrite=config.overwrite,
         retention=config.retention,
         qa_enabled=config.qa_enabled,
+        quicklook_cadence_minutes=config.quicklook_cadence_minutes,
         soss_wavelength_windows=dict(config.soss_wavelength_windows),
     )
 
@@ -404,6 +411,29 @@ def _soss_wavelength_windows(qa: dict[str, Any]) -> dict[int, tuple[float, float
             )
         windows[order] = (lower, upper)
     return windows
+
+
+def _quicklook_cadence_minutes(qa: dict[str, Any]) -> float:
+    """Validate the fixed elapsed-time cadence used by white-light quick looks."""
+    quicklook = qa.get("quicklook", {})
+    if not isinstance(quicklook, dict):
+        raise ConfigurationError("Configuration field 'qa.quicklook' must be a mapping.")
+    value = quicklook.get("cadence_minutes", DEFAULT_QUICKLOOK_CADENCE_MINUTES)
+    if isinstance(value, bool):
+        raise ConfigurationError(
+            "Configuration field 'qa.quicklook.cadence_minutes' must be a positive finite number."
+        )
+    try:
+        cadence = float(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigurationError(
+            "Configuration field 'qa.quicklook.cadence_minutes' must be a positive finite number."
+        ) from error
+    if not math.isfinite(cadence) or cadence <= 0:
+        raise ConfigurationError(
+            "Configuration field 'qa.quicklook.cadence_minutes' must be a positive finite number."
+        )
+    return cadence
 
 
 def _archive_target_names(query: dict[str, Any]) -> tuple[str, ...]:

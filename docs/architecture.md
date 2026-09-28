@@ -80,7 +80,21 @@ diagnostic is the per-channel `1.4826 * MAD_t(flux) / abs(median_t(flux))` in pp
 later-minus-earlier consecutive integrations, normalized by the temporal median and plotted at the later timestamp;
 therefore it has one fewer time row than the input.
 `white_light.png` uses four rows: the combined available orders, then separate fixed panels for Orders 1, 2,
-and 3. Each order keeps the same color in the combined and its individual panel.
+and 3. Each order keeps the same color in the combined and its individual panel. Stage 2 QA-derived
+per-order sums are independently expressed in ppt relative to their finite temporal medians. Stage 3
+retains the existing normalization of the official TSO3 per-order white-light products.
+
+Both SOSS and NIRSpec/BOTS extracted-spectrum QA additionally produce
+`white_light_quicklook.png` and `white_light_filtered.ecsv`. The quick-look always uses the same
+median-zeroed jwst-redux QA curve as the diagnostic path (the robust common mode for BOTS and
+separate per-order proxies for SOSS), never the official WhiteLightStep curve. A centered ±10-minute
+median/MAD estimate with an 8-sigma threshold rejects a point only when its immediate finite
+neighbors on both sides are locally consistent; multi-point events and sustained steps are therefore
+preserved by construction. Surviving points are placed into timestamp-derived, unweighted fixed-time
+bins (two minutes by default; configure `qa.quicklook.cadence_minutes`). Empty bins are absent and
+plot lines break across gaps. The ECSV retains every native integration, original and filtered ppt
+values, isolated-outlier and rejection flags, timestamps, and SOSS order identity. These products are
+conservative visualization QA, not science-quality detrending or calibrated light curves.
 
 The shared `qa.common.SpectroscopicTimeSeriesConfig` holds the display-only SOSS
 spectroscopic-time-series guardrails: finite coverage, relative flux floor, robust scaling percentile, 1–50 ppt
@@ -98,9 +112,10 @@ integration counts, finite extracted flux and wavelength samples, monotonic wave
 and observed coverage. Absolute spectra use wavelength-dependent Astropy spectral-density
 equivalencies to produce cgs Fλ. A shared QA-valid channel mask combines finite/DQ-usable coverage,
 a finite nonzero temporal median, and conservative robust ensemble tests for catastrophic flux or
-variability outliers. The NIRSpec common-mode proxy is the median of channel-normalized flux in ppt;
-the official JWST wavelength sum is retained as a separately scaled diagnostic. Mask counts and a
-small set of rejected-channel metrics are persisted in `checks.json`.
+variability outliers. The NIRSpec common-mode proxy is the finite-median-centered median of
+channel-normalized flux in ppt in both Stage 2 and Stage 3; the official JWST wavelength sum is retained
+as a separately scaled diagnostic. Mask counts and a small set of rejected-channel metrics are persisted
+in `checks.json`.
 
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
@@ -113,6 +128,6 @@ outputs; downstream stages explicitly reference the successful upstream run.
 - Custom 1/f corrections
 - Alternative SOSS or BOTS extraction
 - Transit fitting
-- Light-curve analysis
+- Science-quality light-curve analysis or detrending
 - Stellar contamination correction
 - Instrument-specific science analysis

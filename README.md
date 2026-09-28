@@ -56,6 +56,23 @@ Pipeline products are retained by default. Set `options.retention: final` to rem
 upstream-stage FITS products after the requested endpoint and all enabled QA complete successfully.
 Raw inputs, endpoint products, QA, logs, associations, provenance, and unrelated files are retained.
 
+Extracted-spectrum QA also writes `white_light_quicklook.png`, a morphology-focused view of the
+jwst-redux QA-derived white-light curve after conservative isolated-integration rejection and
+fixed-time binning. The default cadence is two minutes and can be changed without altering any
+pipeline product:
+
+```yaml
+qa:
+  enabled: true
+  quicklook:
+    cadence_minutes: 2.0
+```
+
+The corresponding native-cadence decisions are retained in `white_light_filtered.ecsv`, including
+the original and filtered ppt values and rejection flags (plus spectral order for SOSS). This is a
+quick-look QA product only: its local filter is intended to suppress obvious isolated failures, not
+to detrend transits, flares, stellar variability, ramps, or instrumental baseline changes.
+
 ## Supported modes
 
 | Mode | Current scope |

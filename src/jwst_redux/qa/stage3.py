@@ -15,6 +15,7 @@ from .soss import (
     soss_title,
     spectra_plot,
     white_light_proxy_plot,
+    white_light_quicklook_products,
 )
 
 
@@ -49,14 +50,24 @@ def generate(
     whtlt_path: Path,
     output_dir: Path,
     wavelength_windows: dict[int, tuple[float, float]],
+    *,
+    quicklook_cadence_minutes: float = 2.0,
 ) -> tuple[Path, ...]:
     groups, header, flux_unit, _ = spectra_from_x1dints(x1dints_path)
     title = soss_title(header, "Stage 3")
+    quicklook = white_light_quicklook_products(
+        groups,
+        title,
+        output_dir,
+        cadence_minutes=quicklook_cadence_minutes,
+        stage="Stage 3",
+    )
     outputs = (
         spectra_plot(groups, title, flux_unit, output_dir / "spectra.png", wavelength_windows),
         white_light_proxy_plot(
             groups, title, output_dir / "white_light.png", official=official_white_light(whtlt_path)
         ),
+        *quicklook,
         plot_spectroscopic_time_series(
             groups,
             title,

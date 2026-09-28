@@ -13,13 +13,14 @@ from rich.table import Table
 from .batch import BatchWorkflowResult, PreparedBatch, prepare_batch, run_batch
 from .config import (
     DiscoveryConfig,
+    WriteConfig,
     load_batch_config,
     load_config,
     load_discovery_config,
     load_retention_policy,
     load_write_config,
 )
-from .exceptions import JWSTReduxError
+from .exceptions import ConfigurationError, JWSTReduxError, QAUnavailableError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
@@ -170,13 +171,28 @@ def qa(
         typer.Option("--stage", help="Stage(s) to regenerate; defaults to all successful stages."),
     ] = None,
     force: bool = typer.Option(False, "--force", help="Regenerate even current QA products."),
+    all_branches: bool = typer.Option(
+        False,
+        "--all",
+        help="Regenerate QA for every planner-selected branch.",
+    ),
 ) -> None:
     """Regenerate QA from successful local pipeline products only."""
+    stages = tuple(item.value for item in stage or ()) or ("stage1", "stage2", "stage3")
+    if all_branches:
+        try:
+            batch_config = load_batch_config(config)
+            prepared = prepare_batch(batch_config)
+        except (JWSTReduxError, OSError, TypeError, ValueError) as error:
+            _abort(error)
+        if _generate_batch_qa(prepared, stages=stages, force=force):
+            raise typer.Exit(code=1)
+        return
     try:
-        write_config = load_write_config(config)
+        write_config = _load_qa_write_config(config)
         results = generate_qa(
             write_config,
-            stages=tuple(item.value for item in stage or ()) or ("stage1", "stage2", "stage3"),
+            stages=stages,
             force=force,
         )
     except (JWSTReduxError, OSError, TypeError) as error:
@@ -187,6 +203,71 @@ def qa(
         console.print(f"[{color}]QA {result.stage} {result.status}[/]: {result.input_paths[0]}")
         for output in result.outputs:
             console.print(f"  {output}")
+
+
+def _load_qa_write_config(config: Path) -> WriteConfig:
+    """Load selected-exposure QA config, identifying valid batch configs helpfully."""
+    try:
+        return load_write_config(config)
+    except ConfigurationError as selected_error:
+        try:
+            load_batch_config(config)
+        except (JWSTReduxError, OSError, TypeError):
+            raise selected_error
+        raise ConfigurationError(
+            "This is a batch configuration; use `jwst-redux qa CONFIG --all ...`."
+        ) from selected_error
+
+
+def _generate_batch_qa(
+    prepared: PreparedBatch,
+    *,
+    stages: tuple[str, ...],
+    force: bool,
+) -> bool:
+    """Generate QA for every prepared branch, preserving successful siblings."""
+    failed = False
+    requested_stages = tuple(dict.fromkeys(stages))
+    for branch in prepared.branches:
+        try:
+            results = generate_qa(branch.config, stages=stages, force=force)
+        except QAUnavailableError:
+            for requested_stage in requested_stages:
+                _print_batch_qa_status(requested_stage, "unavailable", branch.label)
+            continue
+        except Exception as error:  # noqa: BLE001 - one bad branch must not prevent siblings.
+            failed = True
+            for requested_stage in requested_stages:
+                _print_batch_qa_status(requested_stage, "failed", branch.label, error=str(error))
+            continue
+
+        returned_stages = {result.stage for result in results}
+        for result in results:
+            if result.status == "failed":
+                failed = True
+            error = result.manifest_entry.get("error") if result.status == "failed" else None
+            _print_batch_qa_status(result.stage, result.status, branch.label, error=error)
+            for output in result.outputs:
+                console.print(f"  {output}")
+        for requested_stage in requested_stages:
+            if requested_stage not in returned_stages:
+                _print_batch_qa_status(requested_stage, "unavailable", branch.label)
+    return failed
+
+
+def _print_batch_qa_status(
+    stage: str,
+    status: str,
+    branch_label: str,
+    *,
+    error: str | None = None,
+) -> None:
+    color = "green" if status in {"success", "skipped"} else "yellow"
+    if status == "failed":
+        color = "red"
+    stage_label = stage.removeprefix("stage")
+    suffix = f": {error}" if error else ""
+    console.print(f"[{color}]QA Stage {stage_label} {status}[/]: {branch_label}{suffix}")
 
 
 def _print_segment_result(
