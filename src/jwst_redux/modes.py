@@ -8,17 +8,29 @@ from .exceptions import PlanningError
 from .models import Exposure
 
 SOSS_MODE = ("NIRISS", "NIS_SOSS")
+FIXED_SLIT_MODE = ("NIRSPEC", "NRS_FIXEDSLIT")
 BOTS_MODE = ("NIRSPEC", "NRS_BRIGHTOBJ")
 
 
 @dataclass(frozen=True)
 class ObservingMode:
-    """Metadata contract for one supported official JWST TSO mode."""
+    """Metadata contract for one supported official JWST observing mode."""
 
     label: str
     dataset_identity_fields: tuple[str, ...]
     compatibility_fields: tuple[str, ...]
     detector_branches: bool = False
+    detector_validation_rule: str | None = None
+    is_tso: bool = True
+    stage2_input_suffix: str = "_rateints"
+    stage2_output_suffixes: tuple[str, ...] = ("_calints", "_x1dints")
+    stage3_class: str = "Tso3Pipeline"
+    stage3_input_suffix: str = "_calints"
+    stage3_output_suffixes: tuple[str, ...] = ("_crfints", "_x1dints", "_whtlt")
+    stage2_association_rule: str | None = None
+    stage3_association_rule: str | None = None
+    execution_scope: str = "exposure"
+    validate_fits_fields: tuple[tuple[str, str], ...] = ()
 
 
 SUPPORTED_MODES: dict[tuple[str, str], ObservingMode] = {
@@ -32,6 +44,22 @@ SUPPORTED_MODES: dict[tuple[str, str], ObservingMode] = {
         dataset_identity_fields=("program_id", "observation_id", "visit_number"),
         compatibility_fields=("detector", "grating", "filter", "subarray"),
         detector_branches=True,
+    ),
+    FIXED_SLIT_MODE: ObservingMode(
+        label="NIRSpec/Fixed Slit",
+        dataset_identity_fields=("program_id", "observation_id", "visit_number"),
+        compatibility_fields=("grating", "filter", "fixed_slit", "subarray", "visit_number"),
+        is_tso=False,
+        stage2_input_suffix="_rate",
+        stage2_output_suffixes=("_cal", "_x1d"),
+        stage3_class="Spec3Pipeline",
+        stage3_input_suffix="_cal",
+        stage3_output_suffixes=("_s2d", "_x1d"),
+        stage2_association_rule="Asn_Lv2NRSFSS",
+        stage3_association_rule="Asn_Lv3NRSFSS",
+        execution_scope="group",
+        detector_validation_rule="nrsfss_valid_detector",
+        validate_fits_fields=(("FXD_SLIT", "fixed_slit"),),
     ),
 }
 

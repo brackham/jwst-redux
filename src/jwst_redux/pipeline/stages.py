@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ..exceptions import PlanningError
 from ..models import Exposure
-from ..modes import BOTS_MODE, SOSS_MODE, mode_key, nirspec_bots_detectors
+from ..modes import BOTS_MODE, SOSS_MODE, mode_key, nirspec_bots_detectors, observing_mode_for
 
 
 @dataclass(frozen=True)
@@ -18,20 +18,26 @@ class PipelinePath:
 
 
 def pipeline_path_for(exposure: Exposure) -> PipelinePath:
-    """Resolve a supported official TSO path from normalized metadata."""
-    mode = mode_key(exposure)
-    if exposure.is_tso is not True:
+    """Resolve a supported official pipeline path from normalized metadata."""
+    try:
+        definition = observing_mode_for(exposure)
+    except PlanningError as error:
+        raise PlanningError(
+            "Only NIRISS/NIS_SOSS and NIRSpec/NRS_BRIGHTOBJ or NRS_FIXEDSLIT science "
+            "observations are supported."
+        ) from error
+    if definition.is_tso and exposure.is_tso is not True:
         raise PlanningError(
             "Only supported TSO science observations with TSOVISIT=true can be planned."
         )
-
+    if not definition.is_tso and exposure.is_tso is True:
+        raise PlanningError("Non-TSO spectroscopy requires TSOVISIT=false.")
+    mode = mode_key(exposure)
     if mode == SOSS_MODE:
         return _soss_pipeline_path(exposure)
     if mode == BOTS_MODE:
         return _bots_pipeline_path(exposure)
-    raise PlanningError(
-        "Only NIRISS/NIS_SOSS and NIRSpec/NRS_BRIGHTOBJ science observations are supported."
-    )
+    return PipelinePath(classes=("Detector1Pipeline", "Spec2Pipeline", definition.stage3_class))
 
 
 def _soss_pipeline_path(exposure: Exposure) -> PipelinePath:

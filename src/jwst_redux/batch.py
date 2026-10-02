@@ -16,6 +16,7 @@ from .config import BatchConfig, ExposureSelectionConfig, WriteConfig, write_con
 from .mast.download import ProductDownloader
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Exposure, ReductionPlan, ScienceDataset
+from .modes import observing_mode_for
 from .pipeline.runner import PipelineCallable
 from .planning.resolver import make_reduction_plans
 from .provenance import ManifestStore
@@ -28,7 +29,7 @@ ContextResolver = Callable[[str], str]
 
 @dataclass(frozen=True)
 class BatchBranch:
-    """One exposure-level execution branch derived from a reduction plan."""
+    """One exposure or association-group execution branch from a reduction plan."""
 
     dataset: ScienceDataset
     reduction: ReductionPlan
@@ -40,6 +41,8 @@ class BatchBranch:
 
     @property
     def label(self) -> str:
+        if self.config.group_id:
+            return f"{self.dataset.dataset_id} / {len(self.reduction.group.exposures)} exposures"
         return self.config.selection.label
 
     @property
@@ -83,10 +86,24 @@ def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) 
     for dataset_plan in plans:
         for reduction in dataset_plan.reductions:
             endpoint = _endpoint(reduction)
-            for exposure in reduction.group.exposures:
+            mode = observing_mode_for(reduction.group.exposures[0])
+            members = (
+                reduction.group.exposures[:1]
+                if mode.execution_scope == "group"
+                else reduction.group.exposures
+            )
+            for exposure in members:
                 detector = dict(reduction.group.compatibility).get("detector")
                 selection = _selection_for(dataset_plan.dataset, exposure, detector=detector)
                 write_config = write_config_for_exposure(config, selection)
+                if mode.execution_scope == "group":
+                    from dataclasses import replace
+
+                    from .group_workflow import group_workspace_id
+
+                    write_config = replace(
+                        write_config, group_id=group_workspace_id(reduction.group)
+                    )
                 stage_actions = tuple(
                     (stage.name, _stage_action(write_config, exposure, stage.name))
                     for stage in reduction.stages
@@ -99,7 +116,8 @@ def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) 
                         config=write_config,
                         endpoint=endpoint,
                         segment_count=sum(
-                            product.exposure_id == exposure.exposure_id
+                            mode.execution_scope == "group"
+                            or product.exposure_id == exposure.exposure_id
                             for product in reduction.group.products
                         ),
                         stage_actions=stage_actions,
@@ -117,6 +135,7 @@ def run_batch(
     detector1_pipeline: PipelineCallable | None = None,
     spec2_pipeline: PipelineCallable | None = None,
     tso3_pipeline: PipelineCallable | None = None,
+    spec3_pipeline: PipelineCallable | None = None,
     context_resolver: ContextResolver | None = None,
 ) -> BatchWorkflowResult:
     """Execute prepared branches in order, retaining successful siblings on failure.
@@ -138,6 +157,7 @@ def run_batch(
                 detector1_pipeline=detector1_pipeline,
                 spec2_pipeline=spec2_pipeline,
                 tso3_pipeline=tso3_pipeline,
+                spec3_pipeline=spec3_pipeline,
                 context_resolver=context_resolver,
             )
         except Exception as error:  # noqa: BLE001 - branch failures must not erase siblings.
@@ -170,14 +190,13 @@ def _endpoint(reduction: ReductionPlan) -> str:
         "Detector1Pipeline": "stage1",
         "Spec2Pipeline": "stage2",
         "Tso3Pipeline": "stage3",
+        "Spec3Pipeline": "stage3",
     }[final_stage]
 
 
 def _stage_action(config: WriteConfig, exposure: Exposure, pipeline_stage: str) -> str:
     """Report an intact local success as resume; exact identity is rechecked at run time."""
-    workspace = Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
+    workspace = Workspace.for_config(config)
     if not workspace.manifest.is_file():
         return "run"
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
@@ -185,12 +204,17 @@ def _stage_action(config: WriteConfig, exposure: Exposure, pipeline_stage: str) 
         "Detector1Pipeline": "stage1",
         "Spec2Pipeline": "stage2",
         "Tso3Pipeline": "stage3",
+        "Spec3Pipeline": "stage3",
     }[pipeline_stage]
     for entry in reversed(manifest.entries()):
         if (
             entry.get("operation") == operation
             and entry.get("status") == "success"
-            and entry.get("exposure_identifier") == exposure.exposure_id
+            and (
+                entry.get("exposure_identifier") == exposure.exposure_id
+                or entry.get("group_id") == config.group_id
+                and config.group_id is not None
+            )
             and _outputs_intact(entry.get("outputs"))
         ):
             return "resume"

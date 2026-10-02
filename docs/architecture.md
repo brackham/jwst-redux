@@ -34,6 +34,12 @@ elements and subarray. BOTS adds detector, grating, filter, and subarray. A dete
 exposure is consequently represented by separate reduction branches rather than an association that
 mixes NRS1 and NRS2 products.
 
+NIRSpec Fixed Slit registers the same program/observation/visit dataset identity with a non-TSO
+pipeline profile. Its compatible groups preserve primary slit, grating/filter, subarray, target,
+and visit. Groups coordinate nod dependencies across exposures and both useful detector arrays;
+`nrsfss_valid_detector` supplies the official optical-path selection. See
+[fixed-slit association policy and validation](fixedslit.md).
+
 ### `pipeline/`
 Runs the selected `jwst` Pipeline classes with standard defaults plus explicit user overrides. The
 implemented write path selects one explicit scientific dataset/exposure, validates its complete
@@ -47,6 +53,12 @@ runs `Tso3Pipeline` once per exposure/detector branch. Local BOTS FITS metadata 
 planned instrument, exposure type, detector, grating, filter, and subarray before execution and
 association construction. Its resume key includes association content, all member paths, and upstream
 Stage-2 run IDs; actual TSO3 outputs are captured rather than assumed.
+
+`ObservingMode` declares TSO state, suffix contracts, association rules, Stage-3 class, and
+execution scope. Association pipelines share the manifest executor in `pipeline/workflow.py`
+and the Stage-3 runner in `pipeline/runner.py`. Fixed-slit group execution resolves archived
+Level-2 members before downloading science, runs all Stage 1 inputs before Spec2, and finishes
+Spec3 before group-level retention. Groups have stable workspaces below `output.root/groups/`.
 
 ### Batch orchestration
 

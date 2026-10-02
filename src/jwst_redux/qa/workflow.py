@@ -104,12 +104,19 @@ def generate_qa(
     This deliberately reads the manifest and existing products; it never invokes
     archive discovery, CRDS, or a JWST calibration pipeline.
     """
+    from ..modes import SUPPORTED_MODES
+
+    mode = SUPPORTED_MODES.get(
+        (config.discovery.query.instrument, config.discovery.query.exposure_type)
+    )
+    if mode is not None and not mode.is_tso:
+        raise QAUnavailableError(
+            "Time-series QA is unavailable for non-TSO fixed-slit spectroscopy."
+        )
     unknown = set(stages).difference({"stage1", "stage2", "stage3"})
     if unknown:
         raise JWSTReduxError(f"Unsupported QA stage(s): {', '.join(sorted(unknown))}")
-    workspace = Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
+    workspace = Workspace.for_config(config)
     if not workspace.manifest.is_file():
         raise QAUnavailableError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()

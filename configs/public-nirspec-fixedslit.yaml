@@ -1,0 +1,27 @@
+# STScI's public fixed-slit example: program 1128, obs 006, visit 001.
+# Three S200A1 nods; expected raw science inputs are the three NRS1 exposures.
+query:
+  target: "1808347"
+  target_match: mast_targname
+  archive_target_names: [TYC 4433-1800-1]
+  instrument: NIRSPEC
+  exposure_type: NRS_FIXEDSLIT
+  proposal_id: 1128
+  observation_id: 6
+  grating: G235M
+  filter: F170LP
+products:
+  start_from: uncal
+pipeline:
+  stages: auto
+  endpoint: planned
+  crds_context: auto
+  class_overrides: {}
+output:
+  root: ./work/public-nirspec-fixedslit
+options:
+  overwrite: false
+  retention: all
+  batch_failure_policy: continue
+qa:
+  enabled: false

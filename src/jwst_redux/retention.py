@@ -40,9 +40,7 @@ def apply_retention(
     ``endpoint`` can become candidates. Every candidate is preflighted before the
     first unlink, and deletion progress is persisted after each file.
     """
-    workspace = Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
+    workspace = Workspace.for_config(config)
     manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
     candidate_stages = {
         "stage1": (),

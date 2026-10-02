@@ -6,7 +6,8 @@ STScI `jwst` calibration package.
 ## Status
 
 `jwst-redux` is early-development research software (`0.1.0.dev0`). Current workflows have been
-validated for selected NIRISS/SOSS and NIRSpec/BOTS datasets, and interfaces may change. Inspect a
+validated for selected NIRISS/SOSS and NIRSpec/BOTS datasets and one public NIRSpec Fixed Slit
+case; interfaces may change. Inspect a
 plan before starting a large download or reduction, and validate calibrated products for your own
 scientific use.
 
@@ -14,7 +15,7 @@ scientific use.
 
 - YAML-based target and workflow configuration
 - Read-only MAST discovery and reduction planning
-- Metadata-based selection of official Detector1, Spec2, and TSO3 pipeline paths
+- Metadata-based selection of official Detector1, Spec2, TSO3, and Spec3 pipeline paths
 - Resumable downloads and calibration runs with recorded provenance
 - Derived QA products for inspecting time-series reductions
 - Configurable retention of all products or only raw and final-stage products
@@ -79,8 +80,19 @@ to detrend transits, flares, stellar variability, ramps, or instrumental baselin
 | --- | --- |
 | NIRISS/SOSS | Validated workflows for selected time-series datasets through the applicable official pipeline stages and QA |
 | NIRSpec/BOTS | Validated workflows for selected bright-object time-series datasets through the applicable official pipeline stages and QA |
+| NIRSpec Fixed Slit (`NRS_FIXEDSLIT`) | Public three-nod S200A1 G235M calibration and resume validated through Spec3; high-resolution path fixture-tested; QA unavailable |
 
-The public example is the TOI-3884 NIRSpec/BOTS G395H configuration. See the
+For fixed slit, start with `jwst-redux plan configs/public-nirspec-fixedslit.yaml`, then
+`jwst-redux run configs/public-nirspec-fixedslit.yaml --all`. This public program 1128 example
+uses three S200A1 nods with G235M/F170LP. Stage 2 preserves archived nod/background associations;
+Stage 3 uses `Spec3Pipeline`. See [fixed-slit details and validation limits](docs/fixedslit.md).
+
+For proprietary MAST access, supply `MAST_API_TOKEN` in the process environment using the MyST
+account authorized for the program. Never put credentials in YAML or git. Public data need no token.
+Per-class `pipeline.class_overrides` supports all four pipelines; existing override fields remain
+compatible. Fixed-slit time-series QA is unavailable and explicitly skipped.
+
+The TOI-3884 public example is the NIRSpec/BOTS G395H configuration. See the
 [architecture notes](docs/architecture.md) for more detail about design choices and current scope.
 
 For CLEAR NIRISS/SOSS spectra in count-rate units, skip absolute flux calibration with:

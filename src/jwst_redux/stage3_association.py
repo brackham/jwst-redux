@@ -4,21 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
+from .associations import LocalAssociation
 from .exceptions import PipelineExecutionError
 
-
-@dataclass(frozen=True)
-class Stage3Association:
-    """A serialized official association and its stable local identity."""
-
-    path: Path
-    content_sha256: str
-    member_paths: tuple[Path, ...]
-    product_name: str
-    reused: bool
+Stage3Association = LocalAssociation
 
 
 def create_tso3_association(
@@ -64,4 +55,5 @@ def create_tso3_association(
         member_paths=resolved_members,
         product_name=product_name,
         reused=reused,
+        official_rule="DMS_Level3_Base",
     )

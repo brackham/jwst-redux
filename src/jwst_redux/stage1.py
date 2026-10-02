@@ -14,7 +14,7 @@ from .exceptions import JWSTReduxError, PipelineExecutionError
 from .mast.download import DownloadResult, ProductDownloader, ensure_downloaded
 from .mast.query import DiscoveryResult, discover
 from .models import Exposure, SelectedExposure, SelectedProduct
-from .modes import BOTS_MODE, mode_key
+from .modes import BOTS_MODE, mode_key, observing_mode_for
 from .pipeline.runner import (
     PipelineCallable,
     existing_stage1_outputs,
@@ -24,7 +24,6 @@ from .pipeline.runner import (
     resolve_crds_context,
     run_detector1,
     run_spec2,
-    run_tso3,
 )
 from .provenance import ManifestStore, make_run_key, software_versions, utc_now
 from .retention import RetentionResult, apply_retention
@@ -85,16 +84,21 @@ class SegmentWorkflowResult:
 
 @dataclass(frozen=True)
 class Stage3Readiness:
-    """Intact Stage 2 products available for an official TSO3 association."""
+    """Intact Stage 2 products available for the planned official Stage 3 association."""
 
     selected: SelectedExposure
-    calints_inputs: tuple[Path, ...]
+    calibrated_inputs: tuple[Path, ...]
     upstream_stage2_run_ids: tuple[str, ...]
+
+    @property
+    def calints_inputs(self) -> tuple[Path, ...]:
+        """Backward-compatible name for existing TSO clients."""
+        return self.calibrated_inputs
 
 
 @dataclass(frozen=True)
 class Stage3WorkflowResult:
-    """One TSO3 invocation (or resume) for the explicitly selected exposure."""
+    """One official Stage 3 invocation (or resume) for the selected scope."""
 
     readiness: Stage3Readiness
     association: Stage3Association
@@ -210,7 +214,9 @@ def run_selected_stage1(
             selected.product.detector or selected.exposure.detector,
         )
         crds_context = (context_resolver or resolve_crds_context)(config.crds_context)
-        outputs = expected_stage1_outputs(download.path, workspace.stage1)
+        outputs = expected_stage1_outputs(
+            download.path, workspace.stage1, is_tso=observing_mode_for(selected.exposure).is_tso
+        )
         run_key = make_run_key(
             _resume_identity(config, selected, download.path, outputs, software, crds_context)
         )
@@ -240,8 +246,13 @@ def run_selected_stage1(
                 },
             )
         if previous is not None:
-            resumed_outputs = existing_stage1_outputs(download.path, workspace.stage1)
-            output_records = [_file_record(path) for path in resumed_outputs]
+            resumed_outputs = existing_stage1_outputs(
+                download.path, workspace.stage1, is_tso=observing_mode_for(selected.exposure).is_tso
+            )
+            output_records = [
+                _file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix)
+                for path in resumed_outputs
+            ]
             if output_records != previous["outputs"]:
                 manifest.update(previous["run_id"], {"outputs": output_records})
             log_path.write_text(
@@ -276,10 +287,14 @@ def run_selected_stage1(
             workspace.stage1,
             log_path,
             crds_context,
-            config.parameter_overrides,
+            config.overrides_for("Detector1Pipeline"),
             pipeline=pipeline,
+            is_tso=observing_mode_for(selected.exposure).is_tso,
         )
-        output_records = [_file_record(path) for path in stage1.outputs]
+        output_records = [
+            _file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix)
+            for path in stage1.outputs
+        ]
         manifest.update(
             run_id,
             {
@@ -325,11 +340,27 @@ def run_selected_through(
     detector1_pipeline: PipelineCallable | None = None,
     spec2_pipeline: PipelineCallable | None = None,
     tso3_pipeline: PipelineCallable | None = None,
+    spec3_pipeline: PipelineCallable | None = None,
     context_resolver: ContextResolver | None = None,
 ) -> ThroughWorkflowResult:
     """Run every validated segment of the selected exposure in segment order."""
     if through not in {"stage1", "stage2", "stage3"}:
         raise PipelineExecutionError(f"Unsupported --through stage: {through}")
+    if observing_mode_for_query(config).execution_scope == "group":
+        from .group_workflow import run_group_through
+
+        result = (discoverer or discover)(config.discovery)
+        return run_group_through(
+            config,
+            result,
+            through=through,
+            overwrite=overwrite,
+            downloader=downloader,
+            detector1_pipeline=detector1_pipeline,
+            spec2_pipeline=spec2_pipeline,
+            stage3_pipeline=spec3_pipeline,
+            context_resolver=context_resolver,
+        )
     selected_exposure = _discover_selected_exposure(config, discoverer)
     from .pipeline.stages import pipeline_path_for
 
@@ -480,7 +511,7 @@ def stage3_readiness(
                     config,
                     SelectedProduct(selected.dataset, selected.exposure, product),
                     pipeline_class="jwst.pipeline.Spec2Pipeline",
-                    parameter_overrides=config.spec2_parameter_overrides,
+                    parameter_overrides=config.overrides_for("Spec2Pipeline"),
                 ),
             },
             {},
@@ -495,7 +526,7 @@ def stage3_readiness(
         run_ids.append(str(entry["run_id"]))
     return Stage3Readiness(
         selected=selected,
-        calints_inputs=tuple(calints_inputs),
+        calibrated_inputs=tuple(calints_inputs),
         upstream_stage2_run_ids=tuple(run_ids),
     )
 
@@ -520,133 +551,37 @@ def _run_selected_stage3(
         workspace.associations,
         _tso3_product_name(selected),
     )
-    software = software_versions()
+    from .pipeline.workflow import execute_association
+
     crds_context = (context_resolver or resolve_crds_context)(config.crds_context)
-    association_record = _association_record(association, readiness)
-    run_key = make_run_key(
+    result = execute_association(
+        manifest,
         {
             **_stage3_base_entry(config, selected),
-            "software": software,
-            "crds_context": crds_context,
-            "association": association_record,
-        }
-    )
-    run_id = str(uuid.uuid4())
-    log_path = workspace.logs / f"stage3-{association.product_name}-{run_id[:8]}.log"
-    manifest.append(
-        {
-            **_stage3_base_entry(config, selected),
-            "run_id": run_id,
-            "run_key": run_key,
-            "operation": "stage3",
-            "status": "running",
-            "start_time": utc_now(),
-            "end_time": None,
-            "log_path": str(log_path),
-            "software": software,
             "requested_crds_context": config.crds_context,
-            "crds_context": crds_context,
-            "association": association_record,
-        }
+            "association": _association_record(association, readiness),
+        },
+        association.path,
+        workspace.stage3,
+        workspace.logs,
+        "Tso3Pipeline",
+        "stage3",
+        crds_context,
+        config.overrides_for("Tso3Pipeline"),
+        overwrite=overwrite or config.overwrite,
+        pipeline=pipeline,
+        classify=_stage3_file_record,
     )
-
-    pipeline_started: float | None = None
-    try:
-        previous = None if overwrite or config.overwrite else manifest.successful_run(run_key)
-        if previous is not None:
-            output_records = previous["outputs"]
-            log_path.write_text(
-                "jwst-redux: Tso3Pipeline skipped; matching successful manifest run "
-                f"{previous['run_id']} remains complete.\n",
-                encoding="utf-8",
-            )
-            manifest.update(
-                run_id,
-                {
-                    "status": "skipped",
-                    "end_time": utc_now(),
-                    "elapsed_processing_seconds": 0.0,
-                    "outputs": output_records,
-                    "resumed_from_run_id": previous["run_id"],
-                    "pipeline_configuration": previous.get("pipeline_configuration"),
-                    "pipeline_messages": {
-                        "warning_count": 0,
-                        "error_count": 0,
-                        "warnings": [],
-                        "errors": [],
-                    },
-                },
-            )
-            return Stage3WorkflowResult(
-                readiness=readiness,
-                association=association,
-                status="skipped",
-                outputs=tuple(Path(record["path"]) for record in output_records),
-                elapsed_seconds=0.0,
-                crds_context=crds_context,
-                log_path=log_path,
-                manifest_entry=manifest.entries()[-1],
-            )
-
-        pipeline_started = time.monotonic()
-        stage3 = run_tso3(
-            association.path,
-            workspace.stage3,
-            log_path,
-            crds_context,
-            config.tso3_parameter_overrides,
-            pipeline=pipeline,
-        )
-        provenance = _pipeline_provenance(
-            log_path,
-            "Tso3Pipeline",
-            workspace.stage3,
-            config.tso3_parameter_overrides,
-        )
-        provenance["pipeline_configuration"]["invocation"].update(
-            {"association_path": str(association.path)}
-        )
-        output_records = [_stage3_file_record(path) for path in stage3.outputs]
-        manifest.update(
-            run_id,
-            {
-                "status": "success",
-                "end_time": utc_now(),
-                "elapsed_processing_seconds": stage3.elapsed_seconds,
-                "outputs": output_records,
-                **provenance,
-            },
-        )
-        return Stage3WorkflowResult(
-            readiness=readiness,
-            association=association,
-            status="success",
-            outputs=stage3.outputs,
-            elapsed_seconds=stage3.elapsed_seconds,
-            crds_context=crds_context,
-            log_path=log_path,
-            manifest_entry=manifest.entries()[-1],
-        )
-    except Exception as error:
-        elapsed = 0.0 if pipeline_started is None else time.monotonic() - pipeline_started
-        manifest.update(
-            run_id,
-            {
-                "status": "failed",
-                "end_time": utc_now(),
-                "elapsed_processing_seconds": elapsed,
-                "error": repr(error),
-                **_pipeline_provenance(
-                    log_path,
-                    "Tso3Pipeline",
-                    workspace.stage3,
-                    config.tso3_parameter_overrides,
-                ),
-            },
-        )
-        if isinstance(error, JWSTReduxError):
-            raise
-        raise PipelineExecutionError(f"Tso3Pipeline failed: {error}") from error
+    return Stage3WorkflowResult(
+        readiness=readiness,
+        association=association,
+        status=result.status,
+        outputs=result.outputs,
+        elapsed_seconds=result.elapsed_seconds,
+        crds_context=crds_context,
+        log_path=result.log_path,
+        manifest_entry=result.manifest_entry,
+    )
 
 
 def _manifest_stage2_calints(entry: dict[str, Any]) -> Path:
@@ -703,7 +638,7 @@ def _run_selected_stage2(
                 config,
                 stage1.selected,
                 pipeline_class="jwst.pipeline.Spec2Pipeline",
-                parameter_overrides=config.spec2_parameter_overrides,
+                parameter_overrides=config.overrides_for("Spec2Pipeline"),
             ),
             "software": software,
             "crds_context": crds_context,
@@ -721,7 +656,7 @@ def _run_selected_stage2(
                 config,
                 stage1.selected,
                 pipeline_class="jwst.pipeline.Spec2Pipeline",
-                parameter_overrides=config.spec2_parameter_overrides,
+                parameter_overrides=config.overrides_for("Spec2Pipeline"),
             ),
             "run_id": run_id,
             "run_key": run_key,
@@ -751,7 +686,7 @@ def _run_selected_stage2(
                         config,
                         stage1.selected,
                         pipeline_class="jwst.pipeline.Spec2Pipeline",
-                        parameter_overrides=config.spec2_parameter_overrides,
+                        parameter_overrides=config.overrides_for("Spec2Pipeline"),
                     ),
                     "crds_context": crds_context,
                     "upstream_stage1_run_id": successful_stage1["run_id"],
@@ -814,14 +749,14 @@ def _run_selected_stage2(
             workspace.stage2,
             log_path,
             crds_context,
-            config.spec2_parameter_overrides,
+            config.overrides_for("Spec2Pipeline"),
             pipeline=pipeline,
         )
         provenance = _pipeline_provenance(
             log_path,
             "Spec2Pipeline",
             workspace.stage2,
-            config.spec2_parameter_overrides,
+            config.overrides_for("Spec2Pipeline"),
         )
         output_records = [_stage2_file_record(path) for path in stage2.outputs]
         manifest.update(
@@ -857,7 +792,7 @@ def _run_selected_stage2(
                     log_path,
                     "Spec2Pipeline",
                     workspace.stage2,
-                    config.spec2_parameter_overrides,
+                    config.overrides_for("Spec2Pipeline"),
                 ),
             },
         )
@@ -899,10 +834,12 @@ def _base_entry(
         "expected_raw_size_bytes": product.size_bytes,
         "pipeline_class": pipeline_class,
         "explicit_parameter_overrides": (
-            config.parameter_overrides if parameter_overrides is None else parameter_overrides
+            config.overrides_for("Detector1Pipeline")
+            if parameter_overrides is None
+            else parameter_overrides
         ),
     }
-    if mode_key(exposure) == BOTS_MODE:
+    if exposure.instrument == "NIRSPEC":
         entry.update(
             {
                 "instrument": exposure.instrument,
@@ -911,6 +848,7 @@ def _base_entry(
                 "grating": exposure.grating,
                 "filter": exposure.filter,
                 "subarray": exposure.subarray,
+                "fixed_slit": exposure.fixed_slit,
             }
         )
     return entry
@@ -924,7 +862,7 @@ def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[
         "scientific_dataset": dict(selected.dataset.identity),
         "exposure_identifier": selected.exposure.exposure_id,
         "pipeline_class": "jwst.pipeline.Tso3Pipeline",
-        "explicit_parameter_overrides": config.tso3_parameter_overrides,
+        "explicit_parameter_overrides": config.overrides_for("Tso3Pipeline"),
     }
     if mode_key(selected.exposure) == BOTS_MODE:
         entry.update(
@@ -966,7 +904,7 @@ def _validate_stage3_group(selected: SelectedExposure) -> None:
 
 def _validate_nirspec_file_metadata(path: Path, exposure: Exposure, detector: str | None) -> None:
     """Verify a local BOTS branch against authoritative FITS metadata."""
-    if mode_key(exposure) != BOTS_MODE:
+    if exposure.instrument != "NIRSPEC":
         return
     from astropy.io import fits
 
@@ -984,6 +922,12 @@ def _validate_nirspec_file_metadata(path: Path, exposure: Exposure, detector: st
         "FILTER": exposure.filter,
         "SUBARRAY": exposure.subarray,
     }
+    expected.update(
+        {
+            key: getattr(exposure, field)
+            for key, field in observing_mode_for(exposure).validate_fits_fields
+        }
+    )
     mismatches = []
     for keyword, value in expected.items():
         actual = header.get(keyword)
@@ -1011,9 +955,7 @@ def _association_record(
     association: Stage3Association, readiness: Stage3Readiness
 ) -> dict[str, Any]:
     return {
-        "path": str(association.path),
-        "content_sha256": association.content_sha256,
-        "product_name": association.product_name,
+        **association.record(),
         "official_rule": "jwst.associations.asn_from_list.DMS_Level3_Base",
         "member_calints_paths": [str(path) for path in association.member_paths],
         "upstream_stage2_run_ids": list(readiness.upstream_stage2_run_ids),
@@ -1039,9 +981,7 @@ def _resume_identity(
 
 def _workspace(config: WriteConfig) -> Workspace:
     """Resolve the write workspace isolated by the complete selected exposure."""
-    return Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
+    return Workspace.for_config(config)
 
 
 def _selection_record(config: WriteConfig) -> dict[str, str]:
@@ -1069,18 +1009,22 @@ def _download_record(result: DownloadResult) -> dict[str, Any]:
     }
 
 
-def _file_record(path: Path) -> dict[str, Any]:
+def _file_record(path: Path, stage2_suffix: str = "_rateints") -> dict[str, Any]:
     product_type = path.stem.rsplit("_", maxsplit=1)[-1]
     roles = {
         "rate": "stage1_exposure_average",
         "rateints": "stage2_input",
         "ramp": "stage1_calibrated_ramp_intermediate",
     }
+    if stage2_suffix != "_rateints":
+        roles["rateints"] = "stage1_integration_intermediate"
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "product_type": product_type,
-        "role": roles.get(product_type, "stage1_output"),
+        "role": "stage2_input"
+        if "_" + product_type == stage2_suffix
+        else roles.get(product_type, "stage1_output"),
     }
 
 
@@ -1144,3 +1088,11 @@ def _pipeline_provenance(
         "explicit_parameter_overrides": parameter_overrides,
     }
     return summary
+
+
+def observing_mode_for_query(config: WriteConfig):
+    from .modes import SUPPORTED_MODES
+
+    return SUPPORTED_MODES[
+        (config.discovery.query.instrument, config.discovery.query.exposure_type)
+    ]

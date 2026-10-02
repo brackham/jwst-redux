@@ -155,8 +155,8 @@ def run(
     elif result.stage3_readiness is not None:
         console.print(
             "[green]Stage 3 ready:[/] "
-            f"{len(result.stage3_readiness.calints_inputs)} intact _calints inputs recorded; "
-            "run with --through stage3 to create the association and execute Tso3Pipeline."
+            f"{len(result.stage3_readiness.calibrated_inputs)} intact calibrated inputs recorded; "
+            "run with --through stage3 to create the association and execute the planned pipeline."
         )
     if result.retention is not None:
         _print_retention_result(result.retention)
@@ -319,12 +319,13 @@ def _print_stage2_result(result: Stage2WorkflowResult, *, pruned: set[Path] | No
 
 
 def _print_stage3_result(result: Stage3WorkflowResult) -> None:
+    pipeline_name = result.manifest_entry["pipeline_class"].rsplit(".", 1)[-1]
     console.print(f"Stage 3 association: {result.association.path}")
     console.print(f"Association SHA-256: {result.association.content_sha256}")
     if result.status == "skipped":
-        console.print("[green]Tso3Pipeline skipped:[/] matching successful manifest run found.")
+        console.print(f"[green]{pipeline_name} skipped:[/] matching successful manifest run found.")
     else:
-        console.print(f"[green]Tso3Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
+        console.print(f"[green]{pipeline_name} complete[/] in {result.elapsed_seconds:.1f} s")
     for output in result.outputs:
         console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
     console.print(f"CRDS context: {result.crds_context}")
@@ -485,6 +486,8 @@ def _print_reduction_branch(number: int, reduction_plan: ReductionPlan) -> None:
     stage_table.add_column("Planned flow")
     for stage_number, stage in enumerate(reduction_plan.stages, start=1):
         association = " as one association" if stage.association_required else " independently"
+        if stage.association_scope == "per_science":
+            association = " via one archive association per science input"
         outputs = ", ".join(stage.output_suffixes)
         stage_table.add_row(
             str(stage_number),
@@ -602,6 +605,7 @@ def _dataset_noun(datasets: tuple[ScienceDataset, ...]) -> str:
     labels = {
         ("NIRISS", "NIS_SOSS"): "SOSS dataset",
         ("NIRSPEC", "NRS_BRIGHTOBJ"): "BOTS dataset",
+        ("NIRSPEC", "NRS_FIXEDSLIT"): "Fixed Slit dataset",
     }
     return labels.get((exposure.instrument, exposure.exposure_type), "science dataset")
 

@@ -14,6 +14,7 @@ from typing import Any
 
 from . import __version__
 from .exceptions import JWSTReduxError
+from .security import redact
 
 
 def utc_now() -> str:
@@ -137,7 +138,7 @@ class ManifestStore:
     def _write(self, data: dict[str, Any]) -> None:
         temporary = self.path.with_name(f"{self.path.name}.tmp")
         with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
+            json.dump(redact(data), handle, indent=2, sort_keys=True)
             handle.write("\n")
         temporary.replace(self.path)
 

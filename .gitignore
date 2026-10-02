@@ -45,6 +45,7 @@ crds_cache/
 sandbox/
 configs/*.yaml
 !configs/toi3884-bots-g395h.yaml
+!configs/public-nirspec-fixedslit.yaml
 *.fits
 *.fits.gz
 *.asdf

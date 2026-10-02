@@ -26,6 +26,7 @@ class Exposure:
     grating: str | None = None
     filter: str | None = None
     subarray: str | None = None
+    fixed_slit: str | None = None
     start_time: str | None = None
     duration_seconds: float | None = None
     integration_count: int | None = None
@@ -33,6 +34,7 @@ class Exposure:
     segment_count: int | None = None
     access: str | None = None
     products: tuple[Product, ...] = ()
+    association_products: tuple[Product, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -97,6 +99,7 @@ class PipelineStage:
     input_suffix: str | None = None
     output_suffixes: tuple[str, ...] = ()
     association_required: bool = False
+    association_scope: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
