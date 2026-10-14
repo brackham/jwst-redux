@@ -133,6 +133,10 @@ def run_spec2(
         print(f"jwst-redux: CRDS context={crds_context}")
         try:
             (pipeline or _call_official_spec2)(input_path, output_dir, parameter_overrides)
+            if pipeline is None:
+                from .soss import validate_soss_stage2
+
+                validate_soss_stage2(input_path, outputs, parameter_overrides)
         except Exception:
             traceback.print_exc()
             raise
@@ -215,11 +219,13 @@ def _call_official_spec2(
 ) -> None:
     from jwst.pipeline import Spec2Pipeline
 
+    from .soss import spec2_parameters
+
     results = Spec2Pipeline.call(
         str(input_path),
         output_dir=str(output_dir),
         save_results=True,
-        **parameter_overrides,
+        **spec2_parameters(parameter_overrides),
     )
     for result in results if isinstance(results, list | tuple) else (results,):
         if hasattr(result, "close"):

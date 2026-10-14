@@ -83,6 +83,29 @@ to detrend transits, flares, stellar variability, ramps, or instrumental baselin
 The public example is the TOI-3884 NIRSpec/BOTS G395H configuration. See the
 [architecture notes](docs/architecture.md) for more detail about design choices and current scope.
 
+For CLEAR NIRISS/SOSS spectra in count-rate units, skip absolute flux calibration with:
+
+```yaml
+pipeline:
+  spec2_overrides:
+    steps:
+      photom:
+        skip: true
+```
+
+With `jwst==3.0.0`, Spec2 disables extraction saving and a skipped `photom` does not save its
+result. `jwst-redux` attaches an official stpipe post-hook that saves the existing extracted
+model as `_x1dints.fits`, retaining the original units and `S_PHOTOM=SKIPPED`. The hook is inert
+for enabled flux calibration and other observing modes. It is recorded in the effective pipeline
+parameters. Both legacy per-integration tables and newer vector spectral tables are validated;
+F277W SOSS processing still stops after Stage 1.
+
+Rerun the same configuration without overwrite to resume a failed reduction. Intact, matching
+Stage 1 successes and completed Stage 2 segments are reused. A missing spectrum requires Stage 2
+again: `_calints` does not contain the discarded extraction result, and diagnostic ATOCA spectra
+are not interchangeable with the final extracted product. This fix does not recover those
+in-memory spectra or require a JWST upgrade.
+
 ## Development
 
 ```bash

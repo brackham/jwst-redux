@@ -324,10 +324,7 @@ def isolated_local_outliers(
             or abs(values[index] - values[following]) <= threshold
         ):
             continue
-        if (
-            abs(values[previous] - values[following])
-            > config.neighbor_consistency_sigma * scale
-        ):
+        if abs(values[previous] - values[following]) > config.neighbor_consistency_sigma * scale:
             continue
         rejected[index] = True
     return rejected
@@ -446,18 +443,10 @@ def write_filtered_white_light(
     columns.update(
         {
             "time": np.concatenate([curve.time_mjd for curve in curves]),
-            "elapsed_time_hours": np.concatenate(
-                [curve.elapsed_time_hours for curve in curves]
-            ),
-            "original_flux_ppt": np.concatenate(
-                [curve.original_flux_ppt for curve in curves]
-            ),
-            "filtered_flux_ppt": np.concatenate(
-                [curve.filtered_flux_ppt for curve in curves]
-            ),
-            "isolated_outlier": np.concatenate(
-                [curve.isolated_outlier for curve in curves]
-            ),
+            "elapsed_time_hours": np.concatenate([curve.elapsed_time_hours for curve in curves]),
+            "original_flux_ppt": np.concatenate([curve.original_flux_ppt for curve in curves]),
+            "filtered_flux_ppt": np.concatenate([curve.filtered_flux_ppt for curve in curves]),
+            "isolated_outlier": np.concatenate([curve.isolated_outlier for curve in curves]),
             "rejected": np.concatenate([curve.rejected for curve in curves]),
         }
     )

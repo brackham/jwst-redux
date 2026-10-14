@@ -763,6 +763,16 @@ def _run_selected_stage2(
                     for key in ("jwst_redux_version", "python_version", "jwst_version")
                 },
             )
+        if previous is not None and pipeline is None:
+            from .pipeline.soss import validate_soss_stage2
+
+            try:
+                validate_soss_stage2(input_path, outputs, config.spec2_parameter_overrides)
+            except PipelineExecutionError as error:
+                log_path.write_text(
+                    f"jwst-redux: cannot resume Spec2Pipeline: {error}\n", encoding="utf-8"
+                )
+                raise
         if previous is not None:
             output_records = previous["outputs"]
             log_path.write_text(
@@ -1124,6 +1134,10 @@ def _pipeline_provenance(
 ) -> dict[str, Any]:
     summary = pipeline_log_summary(log_path, pipeline_name)
     configuration = summary["pipeline_configuration"]
+    if pipeline_name == "Spec2Pipeline":
+        from .pipeline.soss import spec2_parameters
+
+        configuration["effective_parameter_overrides"] = spec2_parameters(parameter_overrides)
     configuration["invocation"] = {
         "output_dir": str(output_dir),
         "save_results": True,
