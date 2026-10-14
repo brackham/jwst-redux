@@ -242,9 +242,7 @@ def white_light_quicklook_products(
         title,
         output_dir / "white_light_quicklook.png",
         cadence_minutes=cadence_minutes,
-        colors={
-            order: SOSS_ORDER_COLORS.get(order, f"C{order - 1}") for order in groups
-        },
+        colors={order: SOSS_ORDER_COLORS.get(order, f"C{order - 1}") for order in groups},
     )
     table = write_filtered_white_light(
         filtered,
