@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -22,9 +23,63 @@ from .retention import apply_retention
 from .workspace import Workspace
 
 
-def group_workspace_id(group: ReductionGroup) -> str:
+def group_workspace_id(group: ReductionGroup, output_root: Path | None = None) -> str:
     digest = hashlib.sha256(repr(group.compatibility).encode()).hexdigest()[:16]
-    return f"{group.dataset_id}-{digest}"
+    current = f"{group.dataset_id}-{digest}"
+    if (
+        output_root is None
+        or dict(group.compatibility).get("exposure_type") != "NRS_FIXEDSLIT"
+        or (output_root / "groups" / current).exists()
+    ):
+        return current
+    legacy_compatibility = tuple(
+        (key, "0.0" if key == "target_name" else value) for key, value in group.compatibility
+    )
+    legacy_digest = hashlib.sha256(repr(legacy_compatibility).encode()).hexdigest()[:16]
+    legacy = f"{group.dataset_id}-{legacy_digest}"
+    root = output_root / "groups" / legacy
+    if not (root / "manifest.json").is_file():
+        return current
+    # A historical masked-value conversion turned missing names into 0.0.
+    # Reuse that workspace only when archive membership and the immutable raw
+    # FITS headers prove the corrected target and complete observing identity.
+    from astropy.io import fits
+
+    manifest = json.loads((root / "manifest.json").read_text())
+    products = {p.uri: p for p in group.products}
+    compatible = dict(legacy_compatibility)
+    for entry in reversed(manifest["runs"]):
+        if entry.get("operation") != "group" or entry.get("compatibility") != compatible:
+            continue
+        old_inputs = entry.get("archive_inputs", [])
+        if not old_inputs or any(item["uri"] not in products for item in old_inputs):
+            continue
+        for item in old_inputs:
+            product = products[item["uri"]]
+            path = root / "raw" / product.filename
+            if not path.is_file() or path.stat().st_size != item["size_bytes"]:
+                break
+            header = fits.getheader(path)
+            expected = {
+                "PROGRAM": compatible["program_id"],
+                "OBSERVTN": compatible["observation_id"],
+                "VISIT": compatible["visit_number"],
+                "GRATING": compatible["grating"],
+                "FILTER": compatible["filter"],
+                "FXD_SLIT": compatible["fixed_slit"],
+                "SUBARRAY": compatible["subarray"],
+            }
+            if any(str(header.get(key, "")).strip() != value for key, value in expected.items()):
+                break
+            target = (
+                str(header.get("TARGNAME") or "").strip()
+                or str(header.get("TARGPROP") or "").strip()
+            )
+            if target != dict(group.compatibility)["target_name"]:
+                break
+        else:
+            return legacy
+    return current
 
 
 def run_group_through(
@@ -68,7 +123,12 @@ def run_group_through(
         raise PipelineExecutionError(
             "Group spectroscopy selects both useful detectors; omit selection.detector."
         )
-    config = replace(config, group_id=group_workspace_id(group))
+    group_id = group_workspace_id(group, config.discovery.output_root.resolve())
+    config = replace(
+        config,
+        group_id=group_id,
+        resume_target_alias="0.0" if group_id != group_workspace_id(group) else None,
+    )
     workspace = Workspace.for_config(config)
     workspace.create()
     manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
@@ -252,6 +312,7 @@ def _execute_group(
                 config.overrides_for("Spec2Pipeline"),
                 overwrite=overwrite or config.overwrite,
                 pipeline=spec2_pipeline,
+                resume_target_alias=config.resume_target_alias,
             )
             stage2_results.append(
                 Stage2WorkflowResult(

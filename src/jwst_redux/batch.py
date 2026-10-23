@@ -102,7 +102,10 @@ def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) 
                     from .group_workflow import group_workspace_id
 
                     write_config = replace(
-                        write_config, group_id=group_workspace_id(reduction.group)
+                        write_config,
+                        group_id=group_workspace_id(
+                            reduction.group, config.discovery.output_root.resolve()
+                        ),
                     )
                 stage_actions = tuple(
                     (

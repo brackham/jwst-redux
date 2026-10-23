@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from astroquery.mast import MastMissions
+from numpy.ma import is_masked
 
 from ..exceptions import ArchiveQueryError
 from ..security import redact
@@ -106,7 +107,7 @@ def _table_records(table: Any) -> list[dict[str, Any]]:
 
 
 def _plain_value(value: Any) -> Any:
-    if getattr(value, "mask", False) is True:
+    if is_masked(value):
         return None
     if hasattr(value, "item"):
         try:

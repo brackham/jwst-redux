@@ -36,6 +36,7 @@ def execute_association(
     overwrite: bool,
     pipeline: PipelineCallable | None = None,
     classify: Any = None,
+    resume_target_alias: str | None = None,
 ) -> RecordedResult:
     """Resume intact matching success, or record an official association invocation."""
     run_id = str(uuid.uuid4())
@@ -81,6 +82,19 @@ def execute_association(
             },
             {name: base["software"][name] for name in software_keys},
         )
+    if previous is None and resume_target_alias and not overwrite:
+        legacy = {
+            name: value for name, value in base.items() if name not in {"software", "selection"}
+        }
+        legacy["compatibility"] = {**base["compatibility"], "target_name": resume_target_alias}
+        previous = manifest.successful_entry(
+            operation, legacy, {name: base["software"][name] for name in software_keys}
+        )
+        if previous is None:
+            legacy["scientific_target"] = resume_target_alias
+            previous = manifest.successful_entry(
+                operation, legacy, {name: base["software"][name] for name in software_keys}
+            )
     if previous is not None:
         log_path.write_text(
             f"jwst-redux: {pipeline_name} skipped; successful run {previous['run_id']} remains complete.\n"

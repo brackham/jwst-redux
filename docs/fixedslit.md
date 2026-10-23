@@ -61,6 +61,26 @@ records actual files created or updated rather than requiring a fixed output lis
 associations, logs, and manifests. Deleted upstream products must be regenerated if needed for a
 later reduction. Time-series QA is explicitly unavailable/skipped for fixed slit.
 
+## Targets without archive names
+
+Fixed-slit spectra with missing or blank `TARGNAME` can proceed through Spec3 when their headers
+identify one target through a consistent `TARGPROP` or positive `TARGID`/`TARGETID`. These inputs
+must share a program, observation, and visit. Conflicting target identifiers or proposed coordinates
+fail before association execution. Target coordinates (`TARG_RA`/`TARG_DEC`) can vary slightly
+between nods and are not compared for exact equality.
+
+The official `mkpool` and `Asn_Lv3NRSFSS` generator still construct and validate associations.
+For an absent `TARGNAME` card, an empty value is supplied only to read-only headers in memory.
+A checked unnamed group receives one pool-local target ID; that ID is not the archive's target
+number. The identifying header values are recorded with the association. No target name is invented
+and no input FITS file is edited. Inputs with complete target names follow the original path.
+
+MAST masked values are normalized to missing values. When the archive name is missing, discovery
+uses the actual proposal name (`targprop`). Earlier versions converted masked names to `0.0`.
+Existing fixed-slit workspaces affected by that bug are reused only after checking their archive
+membership and immutable raw FITS headers against the corrected target and observing configuration.
+Historical provenance is retained, and matching Stage-1/2 successes remain reusable without overwrite.
+
 ## Proposal-wide and incremental runs
 
 `configs/go11441.yaml` selects `proposal_id: 11441`, `instrument: NIRSPEC`, and
@@ -141,12 +161,26 @@ samples, with standard µm/Jy units. Full pipeline logs and manifest records wer
 run reused all Stage 1, Stage 2, and Stage 3 results without recalibration. Products remain in
 ignored `work/public-nirspec-fixedslit/` and are not committed.
 
-The G235H two-detector path, failures, overwrite, provenance, and retention are fixture-tested with
-pipeline doubles and real official associations. High-resolution/S200A2 calibration, photometric
-accuracy, and proprietary-account login have not been validated locally. GO 11441 calibration has not been
-performed; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
+On 2026-10-23, GO 11441 observation 007 completed Spec3 from retained Stage-2 products for G140H,
+G235H, and G395H through both S200A1 and S200A2, using `jwst` 3.0.0 and `jwst_1584.pmap`.
+All six official associations contained three nods and both detectors. Each branch produced five
+`_x1d` and five `_s2d` products, including a finite POINT-source spectrum in the intended slit.
+The blank `TARGNAME` was retained; `TARGPROP=TIC49871464` established the target identity.
+No Detector1 or Spec2 calibration ran, and all 216 existing science FITS files remained byte-identical.
+Original provenance entries were preserved. Acceptance used `retention: all` to preserve intermediates.
 
-Useful follow-ups are high-resolution/two-slit public calibration acceptance, fixed-slit QA, and
+The final Spec3 branch encountered a Google Drive read timeout and succeeded when retried directly
+from its six checksum-verified calibrated inputs. Subsequent cloud synchronization changed some
+file timestamps by nanoseconds without changing their contents. Such changes can invalidate the
+existing timestamp-based association dependency checks and trigger upstream processing on another
+normal run; this acceptance did not relax those checks or establish skip behavior after cloud resync.
+Repeated-run reuse is regression-tested on stable files, including corrected archive target names.
+
+Failures, overwrite, provenance, and retention are fixture-tested with pipeline doubles and real
+official associations. Full-program calibration, photometric accuracy, and proprietary-account login
+remain unvalidated; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
+
+Useful follow-ups are cloud-sync timestamp resilience, fixed-slit QA, and
 support for archived pools or explicitly supplied associations when MAST lacks an observation-
 candidate ASN. Spectral stitching and higher-level science analysis remain outside this change.
 

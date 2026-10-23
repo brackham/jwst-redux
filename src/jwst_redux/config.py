@@ -113,6 +113,8 @@ class WriteConfig:
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     )
 
+    resume_target_alias: str | None = None
+
     def overrides_for(self, pipeline_class: str) -> dict[str, Any]:
         legacy = {
             "Detector1Pipeline": self.parameter_overrides,

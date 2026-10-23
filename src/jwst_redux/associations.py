@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,7 +65,6 @@ def generate_level3_associations(
         "PROGRAM",
         "OBSERVTN",
         "VISIT",
-        "TARGNAME",
         "INSTRUME",
         "EXP_TYPE",
         "DETECTOR",
@@ -73,13 +74,31 @@ def generate_level3_associations(
         "SUBARRAY",
         "TSOVISIT",
     )
-    for path in ordered:
-        header = fits.getheader(path)
+    headers = [fits.getheader(path) for path in ordered]
+    for path, header in zip(ordered, headers, strict=True):
         fields = required
         missing = [key for key in fields if key not in header or not str(header[key]).strip()]
         if missing:
             raise PipelineExecutionError(f"Association metadata missing in {path.name}: {missing}")
-    pool = mkpool([str(p) for p in ordered])
+    target_identity = None
+    if any(
+        header.get("TARGNAME") is None or not str(header["TARGNAME"]).strip() for header in headers
+    ):
+        target_identity = _unnamed_target_identity(headers)
+        # mkpool 3.0.0 indexes TARGNAME even when the card is absent. Supply
+        # an empty value only in read-only HDU headers; never write the FITS.
+        with ExitStack() as stack:
+            inputs = [stack.enter_context(fits.open(path, mode="readonly")) for path in ordered]
+            for hdus in inputs:
+                if hdus[0].header.get("TARGNAME") is None:
+                    hdus[0].header["TARGNAME"] = ""
+            pool = mkpool(inputs)
+        # mkpool's IDs are local ordinals derived from names, not archive target
+        # numbers. The checked proposal identity establishes one target even
+        # when only some inputs have names. No name is substituted or invented.
+        pool["targetid"] = ["1"] * len(pool)
+    else:
+        pool = mkpool([str(p) for p in ordered])
     for column in pool.colnames:
         pool[column] = [str(value).lower() for value in pool[column]]
     suffix = "_cal.fits"
@@ -133,13 +152,58 @@ def generate_level3_associations(
             for m in p["members"]
         )
         results.append(
-            LocalAssociation(path, digest, member_paths, product_name, reused, rule_name)
+            LocalAssociation(
+                path,
+                digest,
+                member_paths,
+                product_name,
+                reused,
+                rule_name,
+                {"target_identity": target_identity} if target_identity is not None else {},
+            )
         )
     if sorted(science_names) != sorted(by_name):
         raise PipelineExecutionError(
             "Official associations do not cover each selected science input exactly once."
         )
     return tuple(sorted(results, key=lambda a: a.product_name))
+
+
+def _unnamed_target_identity(headers: list[Any]) -> dict[str, Any]:
+    """Fail closed unless unnamed inputs identify one observation-scoped target."""
+    identity = {}
+    for key in ("PROGRAM", "OBSERVTN", "VISIT"):
+        values = {str(header[key]).strip() for header in headers}
+        if len(values) != 1:
+            raise PipelineExecutionError(
+                "Unnamed target inputs must share one program, observation and visit."
+            )
+        identity[key] = values.pop()
+    complete_identifier = False
+    for key in ("TARGPROP", "TARGID", "TARGETID", "TARGNAME"):
+        values = [str(header.get(key, "")).strip() for header in headers]
+        if key in {"TARGID", "TARGETID"}:
+            values = [value if value.isdigit() and int(value) > 0 else "" for value in values]
+        present = {value for value in values if value and value.lower() not in {"null", "none"}}
+        if len(present) > 1:
+            raise PipelineExecutionError(f"Conflicting target identity metadata: {key}.")
+        if present:
+            identity[key] = next(iter(present))
+            if key != "TARGNAME" and all(value in present for value in values):
+                complete_identifier = True
+    if not complete_identifier:
+        raise PipelineExecutionError(
+            "Unnamed target inputs require consistent TARGPROP or TARGID/TARGETID metadata."
+        )
+    # Proposed coordinates describe the common target. TARG_RA/DEC can vary
+    # slightly between nods/epochs, so they are not an exact-identity constraint.
+    for key in ("PROP_RA", "PROP_DEC"):
+        values = {float(header[key]) for header in headers if key in header}
+        if len(values) > 1 or any(not math.isfinite(value) for value in values):
+            raise PipelineExecutionError(f"Conflicting target identity metadata: {key}.")
+        if values:
+            identity[key] = values.pop()
+    return identity
 
 
 def resolve_level2_associations(

@@ -252,6 +252,24 @@ def run_selected_stage1(
                     for key in ("jwst_redux_version", "python_version", "jwst_version")
                 },
             )
+        if previous is None and config.resume_target_alias and not (overwrite or config.overwrite):
+            previous = manifest.successful_entry(
+                "stage1",
+                {
+                    **{
+                        key: value
+                        for key, value in _base_entry(config, selected).items()
+                        if key != "selection"
+                    },
+                    "scientific_target": config.resume_target_alias,
+                    "crds_context": crds_context,
+                    "input_path": str(download.path),
+                },
+                {
+                    key: software[key]
+                    for key in ("jwst_redux_version", "python_version", "jwst_version")
+                },
+            )
         if previous is not None:
             resumed_outputs = existing_stage1_outputs(
                 download.path, workspace.stage1, is_tso=observing_mode_for(selected.exposure).is_tso

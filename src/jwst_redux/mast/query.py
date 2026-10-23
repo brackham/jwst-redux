@@ -150,7 +150,7 @@ def normalize_exposure(record: dict[str, Any]) -> Exposure:
         program_id=_identifier(record.get("program"), width=5),
         observation_id=_identifier(record.get("observtn"), width=3),
         visit_id=_identifier(record.get("visit_id"), width=11),
-        target_name=_text(record.get("targname")),
+        target_name=_text(record.get("targname")) or _text(record.get("targprop")),
         instrument=_upper_text(record.get("instrume")),
         exposure_type=_upper_text(record.get("exp_type")),
         archive_id=_text(record.get("ArchiveFileID")),
