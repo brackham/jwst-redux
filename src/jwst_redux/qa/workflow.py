@@ -120,7 +120,7 @@ def generate_qa(
     if not workspace.manifest.is_file():
         raise QAUnavailableError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     results: list[QAResult] = []
     for stage in stages:
         for pipeline_entry, inputs in _pipeline_products(manifest, config, stage):

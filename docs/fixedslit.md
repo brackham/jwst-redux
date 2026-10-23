@@ -61,6 +61,39 @@ records actual files created or updated rather than requiring a fixed output lis
 associations, logs, and manifests. Deleted upstream products must be regenerated if needed for a
 later reduction. Time-series QA is explicitly unavailable/skipped for fixed slit.
 
+## Proposal-wide and incremental runs
+
+`configs/go11441.yaml` selects `proposal_id: 11441`, `instrument: NIRSPEC`, and
+`exposure_type: NRS_FIXEDSLIT` without `target` or `archive_target_names`. Omitted target names
+produce no MAST `targname` restriction. The same interface works for other proposals (including
+`proposal_ids` lists); existing target-based YAML retains its original matching behavior. Each
+exposure retains its archive target, and compatible groups remain separated by target and optical
+configuration. Search follows every result page rather than stopping at MAST's default page limit.
+
+Every invocation discovers the current archive contents. New targets get independent group
+workspaces; new exposures in an existing group invalidate its completion checkpoint. Small archived
+Stage-2 associations are refreshed during execution, including same-name revisions. Missing nod
+members still fail closed before science downloads. Stage 1 reuses intact matching rates, Stage 2
+reuses intact matching science/background dependencies, and Stage 3 checks the complete association
+and upstream run identities. A changed association invocation writes revised products under
+`stage2/revisions/<identity>/` or `stage3/revisions/<identity>/` when previous completed products
+already occupy the official names; `overwrite: false` preserves those earlier products.
+
+With `retention: final`, an unchanged successful group can skip directly to its recorded Stage-3
+endpoint. This requires matching archive inputs/membership, freshly resolved Stage-2 association
+hashes, local association hashes, all pipeline overrides, software versions, resolved CRDS context,
+and intact recorded final outputs. Missing intermediates do not invalidate this endpoint. A changed
+group or damaged final product regenerates intermediates as needed. A bookkeeping git commit alone
+does not trigger recalibration. Older pruned group manifests are accepted only after checking
+their recorded Stage-1/2 dependency chain and final retention receipt. Retention still waits for the complete group and records each
+removed upstream FITS file; revised directories receive the same path and symlink safety checks.
+
+Read-only plans assess discovery and local provenance; execution rechecks archive association
+contents and resolves automatic CRDS context. A new CRDS context or archive revision can therefore
+change an apparent resume into calibration. Raw inputs remain available for regeneration. This
+workflow has regression coverage using synthetic program evolution and official association
+fixtures; full-program GO 11441 calibration and authenticated program access remain unvalidated.
+
 ## Overrides and authentication
 
 Per-class overrides are available in both selected and batch configs:
@@ -110,8 +143,8 @@ ignored `work/public-nirspec-fixedslit/` and are not committed.
 
 The G235H two-detector path, failures, overwrite, provenance, and retention are fixture-tested with
 pipeline doubles and real official associations. High-resolution/S200A2 calibration, photometric
-accuracy, and proprietary-account login have not been validated locally. Program 11441 was not
-used; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
+accuracy, and proprietary-account login have not been validated locally. GO 11441 calibration has not been
+performed; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
 
 Useful follow-ups are high-resolution/two-slit public calibration acceptance, fixed-slit QA, and
 support for archived pools or explicitly supplied associations when MAST lacks an observation-

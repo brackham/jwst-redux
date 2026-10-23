@@ -87,6 +87,22 @@ For fixed slit, start with `jwst-redux plan configs/public-nirspec-fixedslit.yam
 uses three S200A1 nods with G235M/F170LP. Stage 2 preserves archived nod/background associations;
 Stage 3 uses `Spec3Pipeline`. See [fixed-slit details and validation limits](docs/fixedslit.md).
 
+For all accessible NIRSpec Fixed Slit observations in GO 11441, use the proposal-wide config:
+
+```bash
+jwst-redux search configs/go11441.yaml
+jwst-redux plan configs/go11441.yaml
+jwst-redux run configs/go11441.yaml --all
+```
+
+It omits target restrictions and uses automatic stages/CRDS, `overwrite: false`, `retention: final`,
+continued processing after branch failures, and disabled QA. Outputs are under `work/go11441`.
+Repeat these commands to discover newly available targets and exposures. Completed, matching groups
+are reused even after upstream intermediates have been pruned. Changed nod groups refresh official
+associations and downstream products; previous completed association products are preserved in place,
+with revised outputs under stage-specific `revisions/` directories. The manifest identifies the
+current outputs. See [incremental processing details](docs/fixedslit.md#proposal-wide-and-incremental-runs).
+
 For proprietary MAST access, supply `MAST_API_TOKEN` in the process environment using the MyST
 account authorized for the program. Never put credentials in YAML or git. Public data need no token.
 Per-class `pipeline.class_overrides` supports all four pipelines; existing override fields remain

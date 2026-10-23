@@ -160,7 +160,8 @@ def run(
         )
     if result.retention is not None:
         _print_retention_result(result.retention)
-    console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
+    log_path = result.segments[0].stage1.log_path if result.segments else result.stage3.log_path
+    console.print(f"Manifest: {log_path.parent.parent / 'manifest.json'}")
 
 
 @app.command()
@@ -382,12 +383,12 @@ def run_all(config: Path) -> None:
 
 def _print_search(config: DiscoveryConfig, result: DiscoveryResult) -> None:
     query = config.query
-    console.print(f"[bold]MAST JWST search: {query.target}[/]")
+    console.print(f"[bold]MAST JWST search: {query.label}[/]")
     console.print(
         f"Strategy: {query.target_match}; instrument={query.instrument}; "
         f"EXP_TYPE={query.exposure_type}; productLevel=1b"
     )
-    console.print("Archive target names: " + ", ".join(query.archive_target_names))
+    console.print("Archive target names: " + (", ".join(query.archive_target_names) or "all"))
     programs = "all" if query.proposal_ids is None else ", ".join(query.proposal_ids)
     console.print(f"Proposal/program IDs: {programs}")
     for number, dataset in enumerate(result.datasets, start=1):
@@ -424,7 +425,7 @@ def _print_plan(
     *,
     retention: str = "all",
 ) -> None:
-    console.print(f"[bold]Reduction plan: {config.query.target}[/]")
+    console.print(f"[bold]Reduction plan: {config.query.label}[/]")
     console.print(f"Retention: {retention}")
     reduction_count = sum(len(plan.reductions) for plan in plans)
     console.print(

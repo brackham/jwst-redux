@@ -173,7 +173,7 @@ def resolve_level2_associations(
         )
     candidates: dict[str, list[LocalAssociation]] = {}
     for product in sorted(products.values(), key=lambda p: p.filename):
-        download = ensure_downloaded(product, cache, downloader=downloader)
+        download = ensure_downloaded(product, cache, overwrite=True, downloader=downloader)
         text = download.path.read_text()
         try:
             association = load_asn(text, validate=True)

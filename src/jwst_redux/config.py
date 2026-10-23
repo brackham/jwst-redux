@@ -23,7 +23,7 @@ DEFAULT_QUICKLOOK_CADENCE_MINUTES = 2.0
 class QueryConfig:
     """Archive-independent target request plus its current MAST matching strategy."""
 
-    target: str
+    target: str | None
     target_match: str
     archive_target_names: tuple[str, ...]
     instrument: str
@@ -33,6 +33,15 @@ class QueryConfig:
     visit_id: str | None = None
     grating: str | None = None
     filter: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Human-readable query scope, also used to label its manifests."""
+        return (
+            self.target
+            or ", ".join(self.archive_target_names)
+            or "Proposal " + ", ".join(self.proposal_ids or ())
+        )
 
 
 @dataclass(frozen=True)
@@ -176,14 +185,22 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
     if pipeline.get("stages", "auto") != "auto":
         raise ConfigurationError("This milestone only supports pipeline.stages='auto'.")
 
+    proposal_ids = _proposal_ids(query)
+    target = _required_string(query, "target") if "target" in query else None
+    archive_target_names = _archive_target_names(query)
+    if not archive_target_names and not proposal_ids:
+        raise ConfigurationError(
+            "Supply query.target, query.archive_target_names, or query.proposal_id(s)."
+        )
+
     return DiscoveryConfig(
         query=QueryConfig(
-            target=_required_string(query, "target"),
+            target=target,
             target_match=target_match,
-            archive_target_names=_archive_target_names(query),
+            archive_target_names=archive_target_names,
             instrument=_required_string(query, "instrument").upper(),
             exposure_type=_required_string(query, "exposure_type").upper(),
-            proposal_ids=_proposal_ids(query),
+            proposal_ids=proposal_ids,
             observation_id=_optional_identifier(query.get("observation_id")),
             visit_id=_optional_identifier(query.get("visit_id")),
             grating=_optional_upper_string(query.get("grating")),
@@ -466,10 +483,10 @@ def _quicklook_cadence_minutes(qa: dict[str, Any]) -> float:
 
 
 def _archive_target_names(query: dict[str, Any]) -> tuple[str, ...]:
-    target = _required_string(query, "target")
+    target = _required_string(query, "target") if "target" in query else None
     value = query.get("archive_target_names")
     if value is None:
-        return (target,)
+        return (target,) if target is not None else ()
     return _identifier_list(value, "query.archive_target_names")
 
 

@@ -362,10 +362,11 @@ def test_final_retention_waits_for_all_nods_and_preserves_raw_associations_logs(
     assert list(workspace.stage3.glob("*.fits"))
     assert branch.workflow.stage3.association.path.is_file()
     assert list((workspace.stage2 / "associations" / "archive").glob("*.json"))
-    # Removed upstream products must be regenerated, then dependent stages rerun.
+    # Intact final provenance permits resume without regenerating retained-away inputs.
     detector = Detector1()
     again = _run(config, discovery, detector=detector)
-    assert not again.failures and len(detector.calls) == 3
+    assert not again.failures and len(detector.calls) == 0
+    assert again.branches[0].workflow.stage3.status == "skipped"
 
 
 def test_stage2_failure_keeps_background_inputs_and_successful_siblings(tmp_path):
@@ -608,3 +609,58 @@ def test_bookkeeping_commit_does_not_reprocess_intact_pipeline_products(monkeypa
     assert not third.failures
     assert third.branches[0].workflow.stage3.status == "success"
     assert len(spec2.calls) == 6 and len(spec3.calls) == 2
+
+
+def test_existing_group_manifests_with_representative_selectors_still_resume(tmp_path):
+    config, discovery = _discovery(tmp_path)
+    detector, spec2, spec3 = Detector1(), Spec2(), Spec3()
+    first = _run(config, discovery, detector=detector, spec2=spec2, spec3=spec3)
+    assert not first.failures
+    workspace = Workspace.for_config(first.branches[0].branch.config)
+    data = json.loads(workspace.manifest.read_text())
+    representative = next(e["selection"] for e in data["runs"] if e["operation"] == "stage1")
+    for entry in data["runs"]:
+        if entry["operation"] in {"stage1", "stage2"} and entry["status"] == "success":
+            entry["selection"] = representative
+            entry["run_key"] = "legacy-representative-key"
+    workspace.manifest.write_text(json.dumps(data))
+    resumed = _run(config, discovery, detector=detector, spec2=spec2, spec3=spec3)
+    assert not resumed.failures
+    assert len(detector.calls) == len(spec2.calls) == 3
+    assert len(spec3.calls) == 1
+
+
+def test_legacy_pruned_group_reuses_endpoint_only_with_matching_dependency_chain(tmp_path):
+    config, discovery = _discovery(tmp_path)
+    config = replace(config, retention="final")
+    detector, spec2, spec3 = Detector1(), Spec2(), Spec3()
+    first = _run(config, discovery, detector=detector, spec2=spec2, spec3=spec3)
+    assert not first.failures
+    workspace = Workspace.for_config(first.branches[0].branch.config)
+    data = json.loads(workspace.manifest.read_text())
+    representative = next(e["selection"] for e in data["runs"] if e["operation"] == "stage1")
+    for entry in data["runs"]:
+        if entry["operation"] == "group":
+            for key in (
+                "checkpoint_key",
+                "level2_association_hashes",
+                "endpoint_run_id",
+                "outputs",
+                "associations",
+                "retention_policy",
+                "retention_status",
+            ):
+                entry.pop(key, None)
+        elif entry["operation"] in {"stage1", "stage2"}:
+            entry["selection"] = representative
+            entry["run_key"] = "legacy-key"
+    workspace.manifest.write_text(json.dumps(data))
+    again = _run(config, discovery, detector=detector, spec2=spec2, spec3=spec3)
+    assert not again.failures
+    assert again.branches[0].workflow.stage3.status == "skipped"
+    assert len(detector.calls) == len(spec2.calls) == 3 and len(spec3.calls) == 1
+    changed = replace(config, spec2_parameter_overrides={"steps": {"bkg_subtract": {"skip": True}}})
+    invalidated = _run(changed, discovery, detector=detector, spec2=spec2, spec3=spec3)
+    assert not invalidated.failures
+    assert invalidated.branches[0].workflow.stage3.status == "success"
+    assert len(detector.calls) == len(spec2.calls) == 6 and len(spec3.calls) == 2

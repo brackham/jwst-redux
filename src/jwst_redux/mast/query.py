@@ -127,11 +127,12 @@ def _mast_criteria(config: DiscoveryConfig) -> dict[str, Any]:
     """Translate the configured target strategy at the archive boundary."""
     query = config.query
     criteria: dict[str, Any] = {
-        "targname": ",".join(query.archive_target_names),
         "instrume": query.instrument,
         "exp_type": query.exposure_type,
         "productLevel": "1b",
     }
+    if query.archive_target_names:
+        criteria["targname"] = ",".join(query.archive_target_names)
     if query.filter is not None:
         criteria["filter"] = query.filter
     if query.proposal_ids is not None:

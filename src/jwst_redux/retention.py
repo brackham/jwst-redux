@@ -41,7 +41,7 @@ def apply_retention(
     first unlink, and deletion progress is persisted after each file.
     """
     workspace = Workspace.for_config(config)
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     candidate_stages = {
         "stage1": (),
         "stage2": ("stage1",),
@@ -193,8 +193,16 @@ def _preflight(
         expected_dir = getattr(workspace, stage)
         if stage not in allowed_stages:
             return f"unexpected stage {stage!r} for {path}"
-        if not path.is_absolute() or path.parent != expected_dir:
+        revision_dir = path.parent
+        is_revision = (
+            revision_dir.parent == expected_dir / "revisions"
+            and len(revision_dir.name) == 16
+            and all(c in "0123456789abcdef" for c in revision_dir.name)
+        )
+        if not path.is_absolute() or (path.parent != expected_dir and not is_revision):
             return f"recorded path is outside the expected {stage} directory: {path}"
+        if is_revision and (revision_dir.is_symlink() or revision_dir.parent.is_symlink()):
+            return f"revision directory is a symlink: {revision_dir}"
         if expected_dir.is_symlink():
             return f"expected {stage} directory is a symlink: {expected_dir}"
         if path.is_symlink():

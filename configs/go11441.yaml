@@ -1,0 +1,19 @@
+# All currently accessible NIRSpec Fixed Slit science in this proposal.
+query:
+  proposal_id: 11441
+  instrument: NIRSPEC
+  exposure_type: NRS_FIXEDSLIT
+products:
+  start_from: uncal
+pipeline:
+  stages: auto
+  endpoint: planned
+  crds_context: auto
+output:
+  root: ./work/go11441
+options:
+  overwrite: false
+  retention: final
+  batch_failure_policy: continue
+qa:
+  enabled: false

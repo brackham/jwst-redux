@@ -44,12 +44,23 @@ class MastClient:
         self, criteria: dict[str, Any], select_columns: tuple[str, ...]
     ) -> list[dict[str, Any]]:
         """Query JWST exposure records using mission-specific archive fields."""
-        table = self._request(
-            self._backend.query_criteria,
-            **criteria,
-            select_cols=list(select_columns),
-        )
-        return _table_records(table)
+        records = []
+        offset = 0
+        page_size = 5000
+        while True:
+            table = self._request(
+                self._backend.query_criteria,
+                **criteria,
+                select_cols=list(select_columns),
+                limit=page_size,
+                offset=offset,
+                sort_by="fileSetName",
+            )
+            page = _table_records(table)
+            records.extend(page)
+            if len(page) < page_size:
+                return records
+            offset += len(page)
 
     def list_products(self, exposure_ids: list[str]) -> list[dict[str, Any]]:
         """List products for exposure-level MAST IDs without retrieving files."""

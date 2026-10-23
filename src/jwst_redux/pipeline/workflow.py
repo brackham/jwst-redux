@@ -74,7 +74,11 @@ def execute_association(
         )
         previous = manifest.successful_entry(
             operation,
-            {name: value for name, value in base.items() if name != "software"},
+            {
+                name: value
+                for name, value in base.items()
+                if name != "software" and (name != "selection" or not base.get("group_id"))
+            },
             {name: base["software"][name] for name in software_keys},
         )
     if previous is not None:
@@ -99,6 +103,24 @@ def execute_association(
             log_path,
             manifest.entry(run_id),
         )
+    # Preserve previous completed products when a changed association or invocation
+    # needs the same official product names. Keep the first run's legacy layout.
+    product_name = base.get("association", {}).get("product_name")
+    if not overwrite and any(
+        entry.get("operation") == operation
+        and entry.get("status") == "success"
+        and entry.get("association", {}).get("product_name") == product_name
+        for entry in manifest.entries()
+    ):
+        revision = make_run_key(
+            {
+                **{name: value for name, value in base.items() if name != "software"},
+                "software": {name: base["software"][name] for name in software_keys},
+            }
+        )[:16]
+        output_dir = output_dir / "revisions" / revision
+        output_dir.mkdir(parents=True, exist_ok=True)
+    manifest.update(run_id, {"output_dir": str(output_dir)})
     started = time.monotonic()
     try:
         if operation == "stage2":

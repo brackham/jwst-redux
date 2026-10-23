@@ -15,7 +15,7 @@ from typing import Any
 from .config import BatchConfig, ExposureSelectionConfig, WriteConfig, write_config_for_exposure
 from .mast.download import ProductDownloader
 from .mast.query import DiscoveryResult, discover
-from .models import DatasetPlan, Exposure, ReductionPlan, ScienceDataset
+from .models import DatasetPlan, Exposure, ReductionGroup, ReductionPlan, ScienceDataset
 from .modes import observing_mode_for
 from .pipeline.runner import PipelineCallable
 from .planning.resolver import make_reduction_plans
@@ -105,7 +105,10 @@ def prepare_batch(config: BatchConfig, *, discoverer: Discoverer | None = None) 
                         write_config, group_id=group_workspace_id(reduction.group)
                     )
                 stage_actions = tuple(
-                    (stage.name, _stage_action(write_config, exposure, stage.name))
+                    (
+                        stage.name,
+                        _stage_action(write_config, exposure, stage.name, group=reduction.group),
+                    )
                     for stage in reduction.stages
                 )
                 branches.append(
@@ -194,12 +197,21 @@ def _endpoint(reduction: ReductionPlan) -> str:
     }[final_stage]
 
 
-def _stage_action(config: WriteConfig, exposure: Exposure, pipeline_stage: str) -> str:
+def _stage_action(
+    config: WriteConfig, exposure: Exposure, pipeline_stage: str, *, group: ReductionGroup
+) -> str:
     """Report an intact local success as resume; exact identity is rechecked at run time."""
     workspace = Workspace.for_config(config)
     if not workspace.manifest.is_file():
         return "run"
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
+    if config.group_id is not None:
+        from .group_resume import completed_group
+
+        # Only a complete matching group can stand in for retained-away stages.
+        if completed_group(manifest, config, group) is not None:
+            return "resume"
+        return "run"
     operation = {
         "Detector1Pipeline": "stage1",
         "Spec2Pipeline": "stage2",

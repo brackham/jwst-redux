@@ -34,6 +34,9 @@ def test_client_converts_tables_and_only_lists_products() -> None:
     assert products == [{"filename": "example_uncal.fits", "size": 10}]
     assert backend.query_kwargs == {
         "targname": "TOI-3884",
+        "limit": 5000,
+        "offset": 0,
+        "sort_by": "fileSetName",
         "select_cols": ["fileSetName", "program"],
     }
     assert backend.product_datasets == ["dataset-1"]
@@ -53,3 +56,21 @@ def test_client_downloads_via_mast_backend_to_exact_path(tmp_path: Path) -> None
         False,
         True,
     )
+
+
+def test_client_fetches_every_page_without_a_target_restriction():
+    class PagedBackend(FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.offsets = []
+
+        def query_criteria(self, **kwargs):
+            assert "targname" not in kwargs
+            self.offsets.append(kwargs["offset"])
+            end = min(kwargs["offset"] + kwargs["limit"], 5002)
+            return Table({"fileSetName": [f"dataset-{i}" for i in range(kwargs["offset"], end)]})
+
+    backend = PagedBackend()
+    records = MastClient(backend).query_exposures({"program": "11441"}, ("fileSetName",))
+    assert len(records) == len({r["fileSetName"] for r in records}) == 5002
+    assert backend.offsets == [0, 5000]

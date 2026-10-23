@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from .associations import generate_level3_associations, resolve_level2_associations
-from .config import WriteConfig
+from .config import ExposureSelectionConfig, WriteConfig
 from .exceptions import PipelineExecutionError
+from .group_resume import checkpoint_key, completed_group
 from .models import ReductionGroup, SelectedExposure, SelectedProduct
 from .modes import observing_mode_for
 from .pipeline.runner import resolve_crds_context
@@ -69,10 +71,10 @@ def run_group_through(
     config = replace(config, group_id=group_workspace_id(group))
     workspace = Workspace.for_config(config)
     workspace.create()
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     manifest.initialize()
     identity = {
-        "scientific_target": config.discovery.query.target,
+        "scientific_target": config.discovery.query.target or group.exposures[0].target_name,
         "scientific_dataset": dict(dataset.identity),
         "group_id": config.group_id,
         "compatibility": dict(group.compatibility),
@@ -165,13 +167,23 @@ def _execute_group(
     # Resolve once and share the same context across the entire group.
     context = (context_resolver or resolve_crds_context)(config.crds_context)
     manifest.update(group_run_id, {"crds_context": context})
+    if through == "stage3" and config.retention == "final" and not (overwrite or config.overwrite):
+        previous = completed_group(
+            manifest, config, group, crds_context=context, associations=associations
+        )
+        if (
+            previous is not None
+            and previous.get("retention_policy") == "final"
+            and previous.get("retention_status") == "success"
+        ):
+            return _resume_endpoint(manifest, previous, group_run_id, dataset, group, workspace)
     stage1_results = []
     for product in group.products:
         exposure = next(e for e in group.exposures if e.exposure_id == product.exposure_id)
         selected = SelectedProduct(dataset, exposure, product)
         stage1_results.append(
             run_selected_stage1(
-                config,
+                _member_config(config, exposure),
                 overwrite=overwrite,
                 downloader=downloader,
                 pipeline=detector1_pipeline,
@@ -217,7 +229,7 @@ def _execute_group(
             rate = (association.path.parent / science["expname"]).resolve()
             parent = by_rate[rate]
             base = _base_entry(
-                config,
+                _member_config(config, parent.selected.exposure),
                 parent.selected,
                 pipeline_class="jwst.pipeline.Spec2Pipeline",
                 parameter_overrides=config.overrides_for("Spec2Pipeline"),
@@ -225,7 +237,7 @@ def _execute_group(
             result = execute_association(
                 manifest,
                 {
-                    **identity,
+                    **{k: v for k, v in identity.items() if k != "exposure_identifiers"},
                     **base,
                     "association": record,
                     "upstream_stage1_run_ids": [upstream[p] for p in association.member_paths],
@@ -314,6 +326,102 @@ def _execute_group(
             stage_entries["stage3"] = (result.manifest_entry,)
     retention = apply_retention(config, through, stage_entries, qa_succeeded=True)
     manifest.update(
-        group_run_id, {"status": "success", "end_time": utc_now(), "crds_context": context}
+        group_run_id,
+        {
+            "status": "success",
+            "end_time": utc_now(),
+            "crds_context": context,
+            "retention_policy": config.retention,
+            "retention_status": retention.status,
+            **(
+                {
+                    "checkpoint_key": checkpoint_key(config, group),
+                    "level2_association_hashes": [a.content_sha256 for a in associations],
+                    "endpoint_run_id": stage3.manifest_entry.get(
+                        "resumed_from_run_id", stage3.manifest_entry["run_id"]
+                    ),
+                    "outputs": stage3.manifest_entry["outputs"],
+                    "associations": [
+                        *(r.manifest_entry["association"] for r in stage2_results),
+                        stage3.manifest_entry["association"],
+                    ],
+                }
+                if stage3 is not None
+                else {}
+            ),
+        },
     )
     return ThroughWorkflowResult(tuple(segments), readiness, stage3, retention)
+
+
+def _member_config(config, exposure):
+    """Keep per-file provenance stable when a group's representative changes."""
+    return replace(
+        config,
+        selection=ExposureSelectionConfig(
+            exposure.program_id,
+            exposure.observation_id,
+            exposure.visit_number,
+            exposure.exposure_id,
+        ),
+    )
+
+
+def _resume_endpoint(manifest, previous, run_id, dataset, group, workspace):
+    from .associations import LocalAssociation
+    from .stage1 import Stage3Readiness, Stage3WorkflowResult, ThroughWorkflowResult
+
+    entry = manifest.entry(previous["endpoint_run_id"])
+    record = entry["association"]
+    members = tuple(Path(p["path"]) for p in record["member_files"])
+    association = LocalAssociation(
+        Path(record["path"]),
+        record["content_sha256"],
+        members,
+        record["product_name"],
+        True,
+        record["official_rule"],
+        record.get("source", {}),
+    )
+    readiness = Stage3Readiness(
+        SelectedExposure(dataset, group.exposures[0], group.products),
+        members,
+        tuple(record["upstream_stage2_run_ids"]),
+    )
+    log = workspace.logs / f"group-resume-{run_id[:8]}.log"
+    log.write_text(
+        f"jwst-redux: Spec3Pipeline skipped; completed group {previous['run_id']} remains valid.\n"
+        "Upstream products are not required for this completed endpoint.\n"
+    )
+    manifest.update(
+        run_id,
+        {
+            "status": "skipped",
+            "end_time": utc_now(),
+            "resumed_from_run_id": previous["run_id"],
+            "outputs": previous["outputs"],
+            "log_path": str(log),
+        },
+    )
+    resumed = {
+        **entry,
+        "run_id": str(uuid.uuid4()),
+        "status": "skipped",
+        "start_time": utc_now(),
+        "end_time": utc_now(),
+        "elapsed_processing_seconds": 0.0,
+        "log_path": str(log),
+        "resumed_from_run_id": entry["run_id"],
+    }
+    manifest.append(resumed)
+    stage3 = Stage3WorkflowResult(
+        readiness,
+        association,
+        "skipped",
+        tuple(Path(p["path"]) for p in entry["outputs"]),
+        0.0,
+        entry["crds_context"],
+        log,
+        resumed,
+    )
+    return ThroughWorkflowResult((), readiness, stage3)

@@ -121,7 +121,7 @@ def download_selected(
     selected = _discover_selected(config, discoverer)
     workspace = _workspace(config)
     workspace.create()
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     manifest.initialize()
     run_id = str(uuid.uuid4())
     started = utc_now()
@@ -180,7 +180,7 @@ def run_selected_stage1(
     selected = _selected or _discover_selected(config, discoverer)
     workspace = _workspace(config)
     workspace.create()
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     manifest.initialize()
 
     run_id = str(uuid.uuid4())
@@ -236,7 +236,14 @@ def run_selected_stage1(
             previous = manifest.successful_entry(
                 "stage1",
                 {
-                    **_base_entry(config, selected),
+                    # The representative selector is not a per-file dependency
+                    # inside an isolated group workspace. Older manifests used
+                    # that selector for every member; keep those successes reusable.
+                    **{
+                        key: value
+                        for key, value in _base_entry(config, selected).items()
+                        if key != "selection" or config.group_id is None
+                    },
                     "crds_context": crds_context,
                     "input_path": str(download.path),
                 },
@@ -500,7 +507,7 @@ def stage3_readiness(
         raise PipelineExecutionError(
             f"Stage 3 is not ready: no manifest exists for {selected.exposure.exposure_id}."
         )
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     calints_inputs: list[Path] = []
     run_ids: list[str] = []
     for product in selected.products:
@@ -541,7 +548,7 @@ def _run_selected_stage3(
 ) -> Stage3WorkflowResult:
     """Create/reuse one association and run TSO3 for the selected exposure only."""
     workspace = _workspace(config)
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     selected = readiness.selected
     _validate_stage3_group(selected)
     for member in readiness.calints_inputs:
@@ -617,7 +624,7 @@ def _run_selected_stage2(
     pipeline: PipelineCallable | None,
 ) -> Stage2WorkflowResult:
     workspace = _workspace(config)
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     resumed_from = stage1.manifest_entry.get("resumed_from_run_id")
     if isinstance(resumed_from, str):
         successful_stage1 = manifest.entry(resumed_from)
@@ -823,7 +830,7 @@ def _base_entry(
     exposure = selected.exposure
     product = selected.product
     entry = {
-        "scientific_target": config.discovery.query.target,
+        "scientific_target": config.discovery.query.target or selected.exposure.target_name,
         "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
         "exposure_identifier": exposure.exposure_id,
@@ -857,7 +864,7 @@ def _base_entry(
 def _stage3_base_entry(config: WriteConfig, selected: SelectedExposure) -> dict[str, Any]:
     """Provenance shared by a single-exposure TSO3 association/run."""
     entry = {
-        "scientific_target": config.discovery.query.target,
+        "scientific_target": config.discovery.query.target or selected.exposure.target_name,
         "selection": _selection_record(config),
         "scientific_dataset": dict(selected.dataset.identity),
         "exposure_identifier": selected.exposure.exposure_id,
