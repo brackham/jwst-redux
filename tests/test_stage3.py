@@ -12,6 +12,7 @@ from jwst_redux.config import (
 )
 from jwst_redux.datasets import build_science_datasets
 from jwst_redux.exceptions import PipelineExecutionError
+from jwst_redux.file_identity import record_file
 from jwst_redux.mast.query import DiscoveryResult, normalize_exposure
 from jwst_redux.models import Product
 from jwst_redux.pipeline.runner import expected_stage1_outputs, expected_stage2_outputs
@@ -346,9 +347,7 @@ def test_stage3_failure_resume_membership_change_and_overwrite(tmp_path, exposur
         **original,
         "run_id": "changed-stage2-member",
         "outputs": [
-            {**record, "path": str(alternate), "size_bytes": alternate.stat().st_size}
-            if record["product_type"] == "calints"
-            else record
+            {**record, **record_file(alternate)} if record["product_type"] == "calints" else record
             for record in original["outputs"]
         ],
     }

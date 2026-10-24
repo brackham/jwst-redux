@@ -39,6 +39,16 @@ def execute_association(
     resume_target_alias: str | None = None,
 ) -> RecordedResult:
     """Resume intact matching success, or record an official association invocation."""
+    identity = {
+        **identity,
+        "association": {
+            **identity["association"],
+            "member_files": [
+                manifest.file_record(Path(item["path"]))
+                for item in identity["association"]["member_files"]
+            ],
+        },
+    }
     run_id = str(uuid.uuid4())
     log_path = logs / f"{operation}-{association_path.stem}-{run_id[:8]}.log"
     base = {
@@ -96,6 +106,7 @@ def execute_association(
                 operation, legacy, {name: base["software"][name] for name in software_keys}
             )
     if previous is not None:
+        outputs = manifest.refreshed_outputs(previous)
         log_path.write_text(
             f"jwst-redux: {pipeline_name} skipped; successful run {previous['run_id']} remains complete.\n"
         )
@@ -105,14 +116,14 @@ def execute_association(
                 "status": "skipped",
                 "end_time": utc_now(),
                 "elapsed_processing_seconds": 0.0,
-                "outputs": previous["outputs"],
+                "outputs": outputs,
                 "resumed_from_run_id": previous["run_id"],
                 "pipeline_configuration": previous.get("pipeline_configuration"),
             },
         )
         return RecordedResult(
             "skipped",
-            tuple(Path(r["path"]) for r in previous["outputs"]),
+            tuple(Path(r["path"]) for r in outputs),
             0.0,
             log_path,
             manifest.entry(run_id),
@@ -152,13 +163,16 @@ def execute_association(
                 pipeline_name=pipeline_name,
             )
         records = [
-            classify(p)
-            if classify
-            else {
-                "path": str(p),
-                "size_bytes": p.stat().st_size,
-                "product_type": p.stem.rsplit("_", 1)[-1],
-                "role": f"{operation}_output",
+            {
+                **(
+                    classify(p)
+                    if classify
+                    else {
+                        "product_type": p.stem.rsplit("_", 1)[-1],
+                        "role": f"{operation}_output",
+                    }
+                ),
+                **manifest.file_record(p),
             }
             for p in result.outputs
         ]

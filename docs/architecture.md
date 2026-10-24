@@ -132,8 +132,11 @@ in `checks.json`.
 ### `provenance.py`
 Records software, archive identity, CRDS context, inputs, outputs, timing, and status in an atomic JSON
 manifest. Pipeline entries also capture the resolved parameter configuration and warning/error
-summary from the complete log. Resume requires a matching successful entry and intact size-checked
-outputs; downstream stages explicitly reference the successful upstream run.
+summary from the complete log. Resume requires a matching successful entry and intact outputs;
+downstream stages explicitly reference the successful upstream run. `file_identity.py` records
+SHA-256 with size/mtime/ctime, avoids repeated hashing with stable metadata, and verifies contents
+when timestamps change. Legacy checksum evidence can be imported through an append-only audit
+receipt. See [resume behavior](resume.md) for legacy limits and retention checks.
 
 ## Non-goals for the first release
 

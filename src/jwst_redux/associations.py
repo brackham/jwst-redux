@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import PipelineExecutionError
+from .file_identity import metadata
 
 
 @dataclass(frozen=True)
@@ -33,11 +34,38 @@ class LocalAssociation:
             "official_rule": self.official_rule,
             "source": self.source,
             "members": json.loads(self.path.read_text())["products"][0]["members"],
-            "member_files": [
-                {"path": str(p), "size_bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
-                for p in self.member_paths
-            ],
+            "member_files": [metadata(p) for p in self.member_paths],
         }
+
+
+def equivalent_association_records(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Allow rebased relative paths only when the complete official documents agree."""
+    from jwst.associations import load_asn
+    from jwst.associations.exceptions import AssociationError
+
+    ignored = {"path", "content_sha256", "members", "member_files"}
+    if {k: v for k, v in before.items() if k not in ignored} != {
+        k: v for k, v in after.items() if k not in ignored
+    }:
+        return False
+    documents = []
+    try:
+        for record in (before, after):
+            path = Path(record["path"])
+            text = path.read_text()
+            if hashlib.sha256(text.encode()).hexdigest() != record["content_sha256"]:
+                return False
+            load_asn(text, validate=True)
+            document = json.loads(text)
+            if record.get("members") != document["products"][0]["members"]:
+                return False
+            for product in document["products"]:
+                for member in product["members"]:
+                    member["expname"] = str((path.parent / member["expname"]).resolve())
+            documents.append(document)
+    except (OSError, ValueError, KeyError, TypeError, AssociationError):
+        return False
+    return documents[0] == documents[1]
 
 
 def generate_level3_associations(

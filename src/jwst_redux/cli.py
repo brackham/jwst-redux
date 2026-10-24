@@ -24,6 +24,7 @@ from .exceptions import ConfigurationError, JWSTReduxError, QAUnavailableError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
 from .planning.resolver import make_reduction_plans
+from .provenance import ManifestStore
 from .qa.workflow import generate_qa
 from .retention import RetentionResult
 from .stage1 import (
@@ -64,6 +65,19 @@ def search(config: Path) -> None:
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
     _print_search(discovery_config, result)
+
+
+@app.command()
+def import_checksums(manifest: Path, baseline: Path) -> None:
+    """Verify a trusted earlier checksum BASELINE and append evidence to MANIFEST."""
+    import json
+
+    try:
+        target = json.loads(manifest.read_text())["scientific_target"]
+        count = ManifestStore(manifest, target).import_checksums(baseline)
+    except (JWSTReduxError, OSError, KeyError, ValueError, TypeError) as error:
+        _abort(error)
+    console.print(f"Verified {count} checksum baselines; historical runs preserved.")
 
 
 @app.command()

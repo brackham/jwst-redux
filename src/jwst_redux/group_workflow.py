@@ -398,6 +398,7 @@ def _execute_group(
                 {
                     "checkpoint_key": checkpoint_key(config, group),
                     "level2_association_hashes": [a.content_sha256 for a in associations],
+                    "raw_inputs": [s.manifest_entry["input_file"] for s in stage1_results],
                     "endpoint_run_id": stage3.manifest_entry.get(
                         "resumed_from_run_id", stage3.manifest_entry["run_id"]
                     ),
@@ -454,13 +455,14 @@ def _resume_endpoint(manifest, previous, run_id, dataset, group, workspace):
         f"jwst-redux: Spec3Pipeline skipped; completed group {previous['run_id']} remains valid.\n"
         "Upstream products are not required for this completed endpoint.\n"
     )
+    outputs = manifest.refreshed_outputs(entry)
     manifest.update(
         run_id,
         {
             "status": "skipped",
             "end_time": utc_now(),
             "resumed_from_run_id": previous["run_id"],
-            "outputs": previous["outputs"],
+            "outputs": outputs,
             "log_path": str(log),
         },
     )
@@ -473,6 +475,7 @@ def _resume_endpoint(manifest, previous, run_id, dataset, group, workspace):
         "elapsed_processing_seconds": 0.0,
         "log_path": str(log),
         "resumed_from_run_id": entry["run_id"],
+        "outputs": outputs,
     }
     manifest.append(resumed)
     stage3 = Stage3WorkflowResult(

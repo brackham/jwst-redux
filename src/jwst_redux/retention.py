@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WriteConfig
+from .file_identity import file_matches
 from .provenance import ManifestStore, utc_now
 from .workspace import Workspace
 
@@ -173,7 +174,7 @@ def _recorded_files(
                     continue
                 if fits_only and not path.lower().endswith(".fits"):
                     continue
-                found[path] = {"stage": stage, "path": path, "size_bytes": size}
+                found[path] = {**record, "stage": stage, "path": path, "size_bytes": size}
     return tuple(found[path] for path in sorted(found))
 
 
@@ -215,6 +216,8 @@ def _preflight(
             return f"recorded output is not a regular file: {path}"
         if item["size_bytes"] <= 0 or details.st_size != item["size_bytes"]:
             return f"recorded output is missing or changed: {path}"
+        if not file_matches(item):
+            return f"recorded output content could not be verified: {path}"
     return None
 
 

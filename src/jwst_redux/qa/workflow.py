@@ -245,7 +245,7 @@ def _generate_one(
             {
                 "status": "skipped",
                 "end_time": utc_now(),
-                "outputs": previous["outputs"],
+                "outputs": manifest.refreshed_outputs(previous),
                 "resumed_from_run_id": previous["run_id"],
             },
         )
@@ -260,7 +260,7 @@ def _generate_one(
         )
     try:
         outputs = _plot(stage, inputs, output_dir, plotting_parameters)
-        records = [_file_record(path) for path in outputs]
+        records = [{**_file_record(path), **manifest.file_record(path)} for path in outputs]
         manifest.update(run_id, {"status": "success", "end_time": utc_now(), "outputs": records})
         _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
         return QAResult(

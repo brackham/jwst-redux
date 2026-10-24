@@ -171,16 +171,22 @@ Original provenance entries were preserved. Acceptance used `retention: all` to 
 
 The final Spec3 branch encountered a Google Drive read timeout and succeeded when retried directly
 from its six checksum-verified calibrated inputs. Subsequent cloud synchronization changed some
-file timestamps by nanoseconds without changing their contents. Such changes can invalidate the
-existing timestamp-based association dependency checks and trigger upstream processing on another
-normal run; this acceptance did not relax those checks or establish skip behavior after cloud resync.
-Repeated-run reuse is regression-tested on stable files, including corrected archive target names.
+file timestamps by nanoseconds without changing their contents. Resume now checks recorded content
+hashes when metadata changes; [legacy checksum import](resume.md) supplies independent pre-drift
+evidence for older association records that lack hashes. Repeated-run reuse is regression-tested
+with timestamp changes, partial reductions, and genuine content changes.
+
+The cloud-directory acceptance subsequently skipped all six Obs 007 branches twice with every
+calibration callback forbidden. The saved pre-drift checksums were verified and imported through
+the generic provenance API; historical entries were unchanged. All 336 existing science FITS files
+remained byte-identical. The second run required no science-file checksum reads. This check retained
+all intermediates; deletion under `retention: final` is covered by regression tests.
 
 Failures, overwrite, provenance, and retention are fixture-tested with pipeline doubles and real
 official associations. Full-program calibration, photometric accuracy, and proprietary-account login
 remain unvalidated; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
 
-Useful follow-ups are cloud-sync timestamp resilience, fixed-slit QA, and
+Useful follow-ups are fixed-slit QA and
 support for archived pools or explicitly supplied associations when MAST lacks an observation-
 candidate ASN. Spectral stitching and higher-level science analysis remain outside this change.
 

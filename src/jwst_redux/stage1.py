@@ -217,8 +217,14 @@ def run_selected_stage1(
         outputs = expected_stage1_outputs(
             download.path, workspace.stage1, is_tso=observing_mode_for(selected.exposure).is_tso
         )
+        input_record = manifest.file_record(download.path)
         run_key = make_run_key(
-            _resume_identity(config, selected, download.path, outputs, software, crds_context)
+            {
+                **_resume_identity(
+                    config, selected, download.path, outputs, software, crds_context
+                ),
+                "input_file": input_record,
+            }
         )
         manifest.update(
             run_id,
@@ -228,6 +234,7 @@ def run_selected_stage1(
                 "crds_context": crds_context,
                 "download": _download_record(download),
                 "input_path": str(download.path),
+                "input_file": input_record,
             },
         )
 
@@ -246,6 +253,7 @@ def run_selected_stage1(
                     },
                     "crds_context": crds_context,
                     "input_path": str(download.path),
+                    "input_file": input_record,
                 },
                 {
                     key: software[key]
@@ -264,6 +272,7 @@ def run_selected_stage1(
                     "scientific_target": config.resume_target_alias,
                     "crds_context": crds_context,
                     "input_path": str(download.path),
+                    "input_file": input_record,
                 },
                 {
                     key: software[key]
@@ -275,11 +284,12 @@ def run_selected_stage1(
                 download.path, workspace.stage1, is_tso=observing_mode_for(selected.exposure).is_tso
             )
             output_records = [
-                _file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix)
+                {
+                    **_file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix),
+                    **manifest.file_record(path),
+                }
                 for path in resumed_outputs
             ]
-            if output_records != previous["outputs"]:
-                manifest.update(previous["run_id"], {"outputs": output_records})
             log_path.write_text(
                 "jwst-redux: Detector1Pipeline skipped; matching successful manifest run "
                 f"{previous['run_id']} remains complete.\n",
@@ -317,7 +327,10 @@ def run_selected_stage1(
             is_tso=observing_mode_for(selected.exposure).is_tso,
         )
         output_records = [
-            _file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix)
+            {
+                **_file_record(path, observing_mode_for(selected.exposure).stage2_input_suffix),
+                **manifest.file_record(path),
+            }
             for path in stage1.outputs
         ]
         manifest.update(
@@ -654,6 +667,7 @@ def _run_selected_stage2(
     if successful_stage1 is None:
         raise PipelineExecutionError("No intact successful Stage 1 manifest run is available.")
     input_path = resolve_stage1_rateints(successful_stage1)
+    input_record = manifest.file_record(input_path)
     outputs = expected_stage2_outputs(input_path, workspace.stage2)
     software = software_versions()
     crds_context = stage1.crds_context
@@ -670,6 +684,7 @@ def _run_selected_stage2(
             "upstream_stage1_run_id": successful_stage1["run_id"],
             "input_path": str(input_path),
             "input_size_bytes": input_path.stat().st_size,
+            "input_file": input_record,
             "output_paths": [str(path) for path in outputs],
         }
     )
@@ -696,6 +711,7 @@ def _run_selected_stage2(
             "upstream_stage1_run_id": successful_stage1["run_id"],
             "input_path": str(input_path),
             "input_size_bytes": input_path.stat().st_size,
+            "input_file": input_record,
             "input_product_type": "rateints",
         }
     )
@@ -717,6 +733,7 @@ def _run_selected_stage2(
                     "upstream_stage1_run_id": successful_stage1["run_id"],
                     "input_path": str(input_path),
                     "input_size_bytes": input_path.stat().st_size,
+                    "input_file": input_record,
                 },
                 {
                     key: software[key]
@@ -734,7 +751,7 @@ def _run_selected_stage2(
                 )
                 raise
         if previous is not None:
-            output_records = previous["outputs"]
+            output_records = manifest.refreshed_outputs(previous)
             log_path.write_text(
                 "jwst-redux: Spec2Pipeline skipped; matching successful manifest run "
                 f"{previous['run_id']} remains complete.\n",
@@ -783,7 +800,9 @@ def _run_selected_stage2(
             workspace.stage2,
             config.overrides_for("Spec2Pipeline"),
         )
-        output_records = [_stage2_file_record(path) for path in stage2.outputs]
+        output_records = [
+            {**_stage2_file_record(path), **manifest.file_record(path)} for path in stage2.outputs
+        ]
         manifest.update(
             run_id,
             {

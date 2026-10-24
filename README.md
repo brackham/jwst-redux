@@ -134,6 +134,10 @@ again: `_calints` does not contain the discarded extraction result, and diagnost
 are not interchangeable with the final extracted product. This fix does not recover those
 in-memory spectra or require a JWST upgrade.
 
+Timestamp changes in synced directories trigger content verification rather than automatic
+recalibration. See [file identities and legacy checksum import](docs/resume.md) for the checks,
+retention behavior, and limits of older manifests without recorded hashes.
+
 ## Development
 
 ```bash

@@ -81,7 +81,9 @@ def completed_group(
         endpoint is None
         or endpoint.get("operation") != "stage3"
         or endpoint.get("status") != "success"
-        or endpoint.get("outputs") != previous["outputs"]
+        or [(p["path"], p["size_bytes"]) for p in endpoint.get("outputs", [])]
+        != [(p["path"], p["size_bytes"]) for p in previous["outputs"]]
+        or not all(manifest.file_is_intact(p) for p in endpoint.get("outputs", []))
         or not previous.get("associations")
     ):
         return None
@@ -92,6 +94,32 @@ def completed_group(
             or hashlib.sha256(path.read_bytes()).hexdigest() != record["content_sha256"]
         ):
             return None
+        for member in record.get("member_files", []):
+            if Path(member["path"]).exists() and not manifest.file_is_intact(member):
+                return None
+    raw_inputs = previous.get("raw_inputs")
+    if raw_inputs is None:
+        # Older checkpoints did not retain raw identities. Use the original
+        # Stage-1 records when available, including verified baseline receipts.
+        raw_inputs = []
+        for product in group.products:
+            path = manifest.path.parent / "raw" / product.filename
+            parents = [
+                e
+                for e in manifest.entries()
+                if e.get("operation") == "stage1"
+                and e.get("status") == "success"
+                and e.get("input_path") == str(path)
+            ]
+            if not parents:
+                return None
+            parent = parents[-1]
+            raw_inputs.append(
+                parent.get("input_file")
+                or {"path": str(path), "size_bytes": parent["download"]["size_bytes"]}
+            )
+    if not all(manifest.file_is_intact(p) for p in raw_inputs):
+        return None
     return previous
 
 
