@@ -236,7 +236,9 @@ def _execute_group(
             and previous.get("retention_policy") == "final"
             and previous.get("retention_status") == "success"
         ):
-            return _resume_endpoint(manifest, previous, group_run_id, dataset, group, workspace)
+            resumed = _resume_endpoint(manifest, previous, group_run_id, dataset, group, workspace)
+            _automatic_stage3_qa(config, manifest, group_run_id)
+            return resumed
     stage1_results = []
     for product in group.products:
         exposure = next(e for e in group.exposures if e.exposure_id == product.exposure_id)
@@ -260,15 +262,6 @@ def _execute_group(
         "stage2": (),
         "stage3": (),
     }
-    if config.qa_enabled:
-        manifest.append(
-            {
-                **identity,
-                "operation": "qa",
-                "status": "skipped",
-                "reason": "Time-series QA is unavailable for non-TSO fixed-slit spectroscopy.",
-            }
-        )
     if through in {"stage2", "stage3"}:
         rates = tuple(
             next(p for p in s.outputs if p.name.endswith(mode.stage2_input_suffix + ".fits"))
@@ -385,7 +378,10 @@ def _execute_group(
                 result.manifest_entry,
             )
             stage_entries["stage3"] = (result.manifest_entry,)
-    retention = apply_retention(config, through, stage_entries, qa_succeeded=True)
+    qa_succeeded = True
+    if stage3 is not None:
+        qa_succeeded = _automatic_stage3_qa(config, manifest, group_run_id)
+    retention = apply_retention(config, through, stage_entries, qa_succeeded=qa_succeeded)
     manifest.update(
         group_run_id,
         {
@@ -414,6 +410,27 @@ def _execute_group(
         },
     )
     return ThroughWorkflowResult(tuple(segments), readiness, stage3, retention)
+
+
+def _automatic_stage3_qa(config, manifest, group_run_id):
+    """Record QA on this invocation, preserving every historical calibration entry."""
+    if not config.qa_enabled:
+        return True
+    from .qa.workflow import generate_qa
+
+    try:
+        results = generate_qa(config, stages=("stage3",))
+        succeeded = bool(results) and all(r.status in {"success", "skipped"} for r in results)
+        details = {"qa_run_ids": [r.manifest_entry["run_id"] for r in results]}
+    except Exception as error:  # noqa: BLE001 - calibration success remains valid.
+        succeeded = False
+        details = {"qa_error": repr(error)}
+    manifest.update(group_run_id, {"qa_status": "success" if succeeded else "failed", **details})
+    if not succeeded:
+        import warnings
+
+        warnings.warn(f"Fixed-slit Stage-3 QA failed; see {manifest.path}", stacklevel=2)
+    return succeeded
 
 
 def _member_config(config, exposure):

@@ -243,7 +243,7 @@ def test_proposal_only_config_and_target_name_compatibility(tmp_path):
     assert batch.discovery.query.label == "Proposal 11441"
     assert batch.discovery.output_root == Path("work/go11441")
     assert batch.retention == "final" and batch.overwrite is False
-    assert batch.qa_enabled is False and batch.failure_policy == "continue"
+    assert batch.qa_enabled is True and batch.failure_policy == "continue"
     data = yaml.safe_load(source.read_text())
     path = tmp_path / "config.yaml"
     data["query"]["target"] = "Friendly target"

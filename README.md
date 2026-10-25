@@ -17,7 +17,7 @@ scientific use.
 - Read-only MAST discovery and reduction planning
 - Metadata-based selection of official Detector1, Spec2, TSO3, and Spec3 pipeline paths
 - Resumable downloads and calibration runs with recorded provenance
-- Derived QA products for inspecting time-series reductions
+- Derived QA products for inspecting time-series and fixed-slit reductions
 - Configurable retention of all products or only raw and final-stage products
 
 ## Installation
@@ -80,7 +80,7 @@ to detrend transits, flares, stellar variability, ramps, or instrumental baselin
 | --- | --- |
 | NIRISS/SOSS | Validated workflows for selected time-series datasets through the applicable official pipeline stages and QA |
 | NIRSpec/BOTS | Validated workflows for selected bright-object time-series datasets through the applicable official pipeline stages and QA |
-| NIRSpec Fixed Slit (`NRS_FIXEDSLIT`) | Public three-nod S200A1 G235M calibration and resume validated through Spec3; high-resolution path fixture-tested; QA unavailable |
+| NIRSpec Fixed Slit (`NRS_FIXEDSLIT`) | Official nod-group calibration through Spec3, resume, and combined Stage-3 spectral QA |
 
 For fixed slit, start with `jwst-redux plan configs/public-nirspec-fixedslit.yaml`, then
 `jwst-redux run configs/public-nirspec-fixedslit.yaml --all`. This public program 1128 example
@@ -96,7 +96,7 @@ jwst-redux run configs/go11441.yaml --all
 ```
 
 It omits target restrictions and uses automatic stages/CRDS, `overwrite: false`, `retention: final`,
-continued processing after branch failures, and disabled QA. Outputs are under `work/go11441`.
+continued processing after branch failures, and enabled Stage-3 QA. Outputs are under `work/go11441`.
 Repeat these commands to discover newly available targets and exposures. Completed, matching groups
 are reused even after upstream intermediates have been pruned. Changed nod groups refresh official
 associations and downstream products; previous completed association products are preserved in place,
@@ -106,7 +106,22 @@ current outputs. See [incremental processing details](docs/fixedslit.md#proposal
 For proprietary MAST access, supply `MAST_API_TOKEN` in the process environment using the MyST
 account authorized for the program. Never put credentials in YAML or git. Public data need no token.
 Per-class `pipeline.class_overrides` supports all four pipelines; existing override fields remain
-compatible. Fixed-slit time-series QA is unavailable and explicitly skipped.
+compatible.
+
+Generate QA for existing fixed-slit reductions, including those completed before QA was supported:
+
+```bash
+jwst-redux qa configs/go11441.yaml --all --stage stage3
+# Regenerate QA without recalibrating:
+jwst-redux qa configs/go11441.yaml --all --stage stage3 --force
+```
+
+Set `output.root` in your YAML to the existing reduction directory (including a mounted Google
+Drive directory). Fixed-slit batch QA selects recorded local groups using the query filters, without
+MAST discovery, downloads, CRDS access, or calibration. It needs only the manifest and its recorded
+Stage-3 `_x1d`/`_s2d` pairs. Each pair gets `spectra.png`, `snr_spectrum.png`, `spectrum_2d.png`,
+and `checks.json` under `groups/<group>/stage3/qa/<x1d-stem>/`. See the
+[fixed-slit QA requirements and limitations](docs/fixedslit.md#stage-3-quality-assurance).
 
 The TOI-3884 public example is the NIRSpec/BOTS G395H configuration. See the
 [architecture notes](docs/architecture.md) for more detail about design choices and current scope.

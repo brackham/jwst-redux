@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 from astropy.io import fits
+from fixedslit_fixtures import write_pair
 
 from jwst_redux.associations import generate_level3_associations, resolve_level2_associations
 from jwst_redux.batch import prepare_batch, run_batch
 from jwst_redux.config import BatchConfig, DiscoveryConfig, QueryConfig
 from jwst_redux.datasets import build_science_datasets
-from jwst_redux.exceptions import PipelineExecutionError, QAUnavailableError
+from jwst_redux.exceptions import PipelineExecutionError
 from jwst_redux.mast.query import DiscoveryResult, discover
 from jwst_redux.pipeline.runner import expected_stage1_outputs, expected_stage2_outputs
 from jwst_redux.pipeline.stages import pipeline_path_for
@@ -179,8 +180,8 @@ class Spec3:
         for m in product["members"]:
             assert (path.parent / m["expname"]).is_file()
         name = product["name"].format(source_id="s00001", slit_name="s200a1")
-        (output_dir / f"{name}_x1d.fits").write_bytes(b"combined")
-        (output_dir / f"{name}_s2d.fits").write_bytes(b"rectified")
+        header = fits.getheader(path.parent / product["members"][0]["expname"])
+        write_pair(output_dir / name, header)
         (output_dir / "pipeline_auxiliary.ecsv").write_bytes(b"auxiliary")
 
 
@@ -314,9 +315,8 @@ def test_group_workflow_resume_provenance_and_official_level3(tmp_path, grating,
         } == {"nrs1", "nrs2"}
     workspace = Workspace.for_config(first.branches[0].branch.config)
     manifest = json.loads(workspace.manifest.read_text())["runs"]
-    assert any(e["operation"] == "qa" and e["status"] == "skipped" for e in manifest)
-    with pytest.raises(QAUnavailableError, match="unavailable"):
-        generate_qa(first.branches[0].branch.config)
+    assert any(e["operation"] == "qa" and e["status"] == "success" for e in manifest)
+    assert generate_qa(first.branches[0].branch.config)[0].status == "skipped"
     second = _run(config, discovery, detector=detector, spec2=spec2, spec3=spec3)
     assert not second.failures
     assert second.branches[0].workflow.stage3.status == "skipped"
@@ -367,6 +367,71 @@ def test_final_retention_waits_for_all_nods_and_preserves_raw_associations_logs(
     again = _run(config, discovery, detector=detector)
     assert not again.failures and len(detector.calls) == 0
     assert again.branches[0].workflow.stage3.status == "skipped"
+
+
+@pytest.mark.parametrize("retention", ["all", "final"])
+def test_completed_group_backfills_qa_without_any_calibration(tmp_path, retention):
+    config, discovery = _discovery(tmp_path)
+    config = replace(config, retention=retention, qa_enabled=False)
+    first = _run(config, discovery)
+    branch = first.branches[0]
+    workspace = Workspace.for_config(branch.branch.config)
+    before = json.loads(workspace.manifest.read_text())["runs"]
+    science = {p: p.read_bytes() for p in workspace.root.rglob("*.fits")}
+    associations = {p: p.read_bytes() for p in workspace.root.rglob("*_asn.json")}
+    assert not list(workspace.qa("stage3").rglob("*.png"))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("completed-group QA backfill executed a calibration")
+
+    again = _run(
+        replace(config, qa_enabled=True),
+        discovery,
+        detector=forbidden,
+        spec2=forbidden,
+        spec3=forbidden,
+    )
+    assert not again.failures
+    assert again.branches[0].workflow.stage3.status == "skipped"
+    assert len(list(workspace.qa("stage3").rglob("*.png"))) == 3
+    after = json.loads(workspace.manifest.read_text())["runs"]
+    assert after[: len(before)] == before
+    assert any(e["operation"] == "qa" and e["status"] == "success" for e in after[len(before) :])
+    assert {p: p.read_bytes() for p in science} == science
+    assert {p: p.read_bytes() for p in associations} == associations
+    if retention == "final":
+        assert not list(workspace.stage1.glob("*.fits"))
+        assert not list(workspace.stage2.glob("*.fits"))
+    third = _run(
+        replace(config, qa_enabled=True),
+        discovery,
+        detector=forbidden,
+        spec2=forbidden,
+        spec3=forbidden,
+    )
+    assert not third.failures
+    entries = json.loads(workspace.manifest.read_text())["runs"]
+    assert next(e for e in reversed(entries) if e["operation"] == "group")["qa_status"] == "success"
+    assert next(e for e in reversed(entries) if e["operation"] == "qa")["status"] == "skipped"
+
+
+def test_automatic_qa_failure_visible_and_blocks_final_retention(monkeypatch, tmp_path):
+    from jwst_redux.qa import fixedslit
+
+    def fail(*args, **kwargs):
+        raise ValueError("synthetic QA failure")
+
+    monkeypatch.setattr(fixedslit, "generate", fail)
+    config, discovery = _discovery(tmp_path)
+    with pytest.warns(UserWarning, match="Stage-3 QA failed"):
+        result = _run(replace(config, retention="final"), discovery)
+    assert not result.failures  # official calibration remains successful
+    workspace = Workspace.for_config(result.branches[0].branch.config)
+    entries = json.loads(workspace.manifest.read_text())["runs"]
+    assert any(e["operation"] == "qa" and e["status"] == "failed" for e in entries)
+    assert next(e for e in reversed(entries) if e["operation"] == "group")["qa_status"] == "failed"
+    assert result.branches[0].workflow.retention.status == "skipped"
+    assert list(workspace.stage2.glob("*.fits"))
 
 
 def test_stage2_failure_keeps_background_inputs_and_successful_siblings(tmp_path):

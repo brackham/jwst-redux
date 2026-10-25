@@ -12,6 +12,7 @@ from rich.table import Table
 
 from .batch import BatchWorkflowResult, PreparedBatch, prepare_batch, run_batch
 from .config import (
+    BatchConfig,
     DiscoveryConfig,
     WriteConfig,
     load_batch_config,
@@ -23,8 +24,10 @@ from .config import (
 from .exceptions import ConfigurationError, JWSTReduxError, QAUnavailableError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
+from .modes import FIXED_SLIT_MODE
 from .planning.resolver import make_reduction_plans
 from .provenance import ManifestStore
+from .qa.local import LocalQABatch, prepare_local_fixedslit_qa
 from .qa.workflow import generate_qa
 from .retention import RetentionResult
 from .stage1 import (
@@ -197,7 +200,17 @@ def qa(
     if all_branches:
         try:
             batch_config = load_batch_config(config)
-            prepared = prepare_batch(batch_config)
+            if (
+                isinstance(batch_config, BatchConfig)
+                and (
+                    batch_config.discovery.query.instrument,
+                    batch_config.discovery.query.exposure_type,
+                )
+                == FIXED_SLIT_MODE
+            ):
+                prepared = prepare_local_fixedslit_qa(batch_config)
+            else:
+                prepared = prepare_batch(batch_config)
         except (JWSTReduxError, OSError, TypeError, ValueError) as error:
             _abort(error)
         if _generate_batch_qa(prepared, stages=stages, force=force):
@@ -218,6 +231,11 @@ def qa(
         console.print(f"[{color}]QA {result.stage} {result.status}[/]: {result.input_paths[0]}")
         for output in result.outputs:
             console.print(f"  {output}")
+        if result.status == "failed":
+            console.print(f"[red]{result.manifest_entry.get('error', 'QA failed')}[/]")
+        _print_qa_warnings(result.manifest_entry)
+    if any(result.status == "failed" for result in results):
+        raise typer.Exit(code=1)
 
 
 def _load_qa_write_config(config: Path) -> WriteConfig:
@@ -235,7 +253,7 @@ def _load_qa_write_config(config: Path) -> WriteConfig:
 
 
 def _generate_batch_qa(
-    prepared: PreparedBatch,
+    prepared: PreparedBatch | LocalQABatch,
     *,
     stages: tuple[str, ...],
     force: bool,
@@ -262,12 +280,18 @@ def _generate_batch_qa(
                 failed = True
             error = result.manifest_entry.get("error") if result.status == "failed" else None
             _print_batch_qa_status(result.stage, result.status, branch.label, error=error)
+            _print_qa_warnings(result.manifest_entry)
             for output in result.outputs:
                 console.print(f"  {output}")
         for requested_stage in requested_stages:
             if requested_stage not in returned_stages:
                 _print_batch_qa_status(requested_stage, "unavailable", branch.label)
     return failed
+
+
+def _print_qa_warnings(entry: dict) -> None:
+    for warning in dict.fromkeys(entry.get("qa_warnings", [])):
+        console.print(f"[yellow]QA quality warning: {warning} (see checks.json)[/]")
 
 
 def _print_batch_qa_status(

@@ -59,7 +59,98 @@ records actual files created or updated rather than requiring a fixed output lis
 
 `retention: final` runs only after the entire group succeeds, retaining raw products, final outputs,
 associations, logs, and manifests. Deleted upstream products must be regenerated if needed for a
-later reduction. Time-series QA is explicitly unavailable/skipped for fixed slit.
+later reduction. Enabled fixed-slit Stage-3 QA runs before retention; a QA failure preserves
+upstream products and is reported separately from successful calibration.
+
+## Stage 3 quality assurance
+
+Set `qa.enabled: true` for automatic QA after Spec3 completes, including on resume when the
+calibration stages are skipped. `qa.enabled: false` suppresses automatic generation. The explicit
+`qa` command works regardless of that automatic setting:
+
+```bash
+jwst-redux qa configs/go11441.yaml --all --stage stage3
+jwst-redux qa configs/go11441.yaml --all --stage stage3 --force
+```
+
+For reductions completed before this feature, point `output.root` at the **existing** reduction
+root in your YAML and run the first command. No calibration is required. The fixed-slit `--all`
+path reads local group manifests and honors program, observation, visit, target-name, grating and
+filter restrictions; it does not query MAST, resolve CRDS, download inputs, reconstruct associations,
+or run any pipeline. It covers recorded reductions only; use `search`/`plan` separately to discover
+new observations. Target filters match recorded names (and explicit archive aliases), rather than
+performing online name resolution. An explicit selected-exposure QA config resolves to its existing
+group without requiring a particular representative nod.
+
+The only science inputs required are the latest successful Stage-3 run's recorded `_x1d.fits`
+and same-stem `_s2d.fits` products. Raw data, Stage-1/2 products, and association members can be
+absent. This supports `retention: final`. Other Stage-3 intermediates are not QA dependencies.
+The fixed-slit implementation currently offers Stage-3 QA only; no nod-by-nod Stage-2 diagnostic
+or time-series light curve is generated.
+
+Each official source/slit product gets a separate directory:
+
+```text
+<output.root>/groups/<group>/stage3/qa/<full-x1d-stem>/
+    spectra.png
+    snr_spectrum.png
+    spectrum_2d.png
+    checks.json
+```
+
+- `spectra.png` shows each EXTRACT1D spectrum separately, in its actual native flux units,
+  with wavelength converted from the table units to µm. Nonfinite flux/wavelength, nonpositive
+  wavelength and any nonzero DQ are masked for display. Every table is inspected; scalar table
+  rows are wavelength samples, while vector rows remain separate spectra. Detector products,
+  source/slit identities and orders are never averaged or stitched by QA.
+- `snr_spectrum.png` shows signed flux divided by the associated FLUX_ERROR after converting
+  uncertainty units to flux units. Only finite, positive uncertainties with usable flux contribute.
+  Missing/incompatible uncertainties produce an explicitly unavailable S/N panel and report warning;
+  they do not prevent the flux/image diagnostics from being generated.
+- `spectrum_2d.png` shows the official combined SCI image with an asinh normalization. Nonfinite
+  values, nonzero DQ where present, and zero/invalid WHT are masked. Standard resampled SlitModel
+  products normally have WHT rather than DQ. The spectral axis uses a physical wavelength grid
+  only when supported by explicit units or the official GWCS and a finite, monotonic, rectified
+  grid. Otherwise it is explicitly labelled in **resampled pixels**, with a report warning. The
+  spatial axis always uses resampled pixels; it is not labelled as angle or detector position.
+- `checks.json` records input paths, source identifiers, target/configuration metadata, units,
+  usable wavelength intervals, finite/invalid/DQ counts and fractions, uncertainty coverage,
+  signed S/N percentiles (16/50/84), image coverage, contributing detectors from HDRTAB when
+  present, and warnings/check outcomes. This is diagnostic QA, not a photometric-accuracy test.
+
+Display limits use finite 1st/99th percentiles bounded by the median ±20 MAD-derived standard
+deviations; constant tiny fluxes retain an appropriate relative scale. This bounds pathological
+samples only in the display. Invalid samples remain gaps, and coordinate jumps exceeding five
+median wavelength steps break plotted lines/images. QA never interpolates across gaps or alters
+science arrays. The recorded parameters document these display choices.
+
+Official Spec3 combines nod exposures and detectors for each slit/source before extraction.
+Fixed-slit source IDs are pipeline bookkeeping: the several slit products from an ALLSLITS
+exposure are **not several astrophysical stars**, and negative background/nod traces are not
+independent sources. Labels show the actual slit and POINT/EXTENDED classification. Blank
+`TARGNAME` falls back to `TARGPROP` for plot identification without changing either FITS keyword.
+See the official [Spec3 products](https://jwst-pipeline.readthedocs.io/en/stable/jwst/pipeline/calwebb_spec3.html)
+and [fixed-slit source organization](https://jwst-pipeline.readthedocs.io/en/stable/jwst/exp_to_source/main.html).
+
+QA runs append their own manifest records, with input/output SHA-256 identities, upstream run ID,
+parameters, software/git identity, original calibration CRDS context, and success/failure times.
+Historical calibration entries and association membership are unchanged. Intact QA is skipped;
+missing, changed or corrupt QA outputs are rebuilt. `--force` regenerates derived QA only.
+Plots and reports are written to temporary files and atomically replaced, preserving an old
+diagnostic if rendering fails and avoiding truncation of existing cloud placeholders.
+Timestamp drift with matching content is accepted using the existing checksum verification.
+Missing or altered science inputs fail QA without recalibration. Older records retain the existing
+[legacy checksum limitations and import protections](resume.md#older-manifests).
+
+Warnings about spectrum quality appear in the report, QA manifest entry, and CLI output (including
+on reuse). A valid but fully masked extraction produces an explicitly empty spectrum/S/N panel,
+retains its 2D diagnostic, and records `quality_status: unusable`; it can still complete QA generation.
+This occurs for ancillary S200B1 extractions in Obs 007. A successful QA run means diagnostics were
+generated, not that its spectrum passed quality checks. Missing/malformed required scientific
+products fail QA, retain a diagnostic report, and make the explicit QA command exit nonzero.
+Automatic QA failures issue a warning and record a failed QA state while
+leaving successful calibration valid. Inspect `checks.json` alongside plots; a successful QA
+generation is not a claim that the spectrum is science-ready.
 
 ## Targets without archive names
 
@@ -184,10 +275,54 @@ all intermediates; deletion under `retention: final` is covered by regression te
 
 Failures, overwrite, provenance, and retention are fixture-tested with pipeline doubles and real
 official associations. Full-program calibration, photometric accuracy, and proprietary-account login
-remain unvalidated; authenticated behavior is tested with an injected backend. No fixed-slit QA is generated.
+remain unvalidated; authenticated behavior is tested with an injected backend.
 
-Useful follow-ups are fixed-slit QA and
-support for archived pools or explicitly supplied associations when MAST lacks an observation-
+### Fixed-slit QA acceptance (2026-10-25)
+
+Stage-3 QA was inspected for Obs 007's six G140H/G235H/G395H and S200A1/S200A2 combinations,
+using existing `jwst` 3.0.0 / `jwst_1584.pmap` products. The primary POINT-source products contain
+both NRS1 and NRS2. The following ranges describe the official wavelength grid; the report also
+records disconnected usable intervals so the detector gap is not mistaken for measured coverage.
+S/N is per extracted sample, not per resolution element.
+
+| Grating | Primary slit | Grid range [µm] | Samples | Invalid or DQ flagged | Median S/N |
+| --- | --- | --- | --- | --- | --- |
+| G140H | S200A1 | 0.967–1.819 | 3450 | 1.80% | 251.4 |
+| G140H | S200A2 | 0.967–1.865 | 3640 | 1.70% | 249.3 |
+| G235H | S200A1 | 1.655–3.051 | 3365 | 3.57% | 241.1 |
+| G235H | S200A2 | 1.655–3.128 | 3555 | 3.35% | 233.2 |
+| G395H | S200A1 | 2.861–5.143 | 3271 | 1.10% | 305.9 |
+| G395H | S200A2 | 2.861–5.273 | 3461 | 4.16% | 307.0 |
+
+Visual inspection of all 18 primary plots showed consistent spectral structure between the two
+slits, unconnected detector gaps, and central positive/negative nod-subtraction structure in the
+resampled images. The ancillary S200B1 extractions have no usable extracted flux: every channel is
+flagged and flux is nonfinite. Their empty flux/S/N panels and `quality_status: unusable` reports
+identify this explicitly while preserving the readable, sometimes extreme-valued 2D diagnostics.
+These ancillary products should not be interpreted as additional stellar spectra.
+
+The in-place CLI acceptance generated 90 PNGs and 30 JSON reports, skipped all 30 product pairs
+on repeat, and regenerated all 30 with `--force`, with no generation failures. Detector1, Spec2,
+Spec3, archive discovery, and download callbacks were forbidden throughout the QA invocations;
+zero calibration calls were executed. The full regression suite passed 250 tests, including SOSS,
+BOTS, final-retention backfill, missing/corrupt inputs/outputs, and timestamp drift. Ruff and
+formatting checks also passed.
+
+All 60 final `_x1d`/`_s2d` inputs were copied read-only and verified against the independent
+pre-QA SHA-256 baseline. All six manifests retained every pre-existing record unchanged, with only
+QA records appended; no science FITS or association file was opened for writing. A broader fresh
+post-run hash scan of all 156 retained FITS and 91 associations could not finish because Drive
+returned `OSError 89: Operation canceled` on retained files. Thus full byte-level revalidation of
+those additional raw/source-calibrated intermediates and association files remains unconfirmed;
+this did not affect the successful Stage-3 QA invocations or require recalibration.
+
+Cloud acceptance encountered intermittent Google Drive reads and an overwrite-open stall. QA now
+narrows canonical group names before hydrating unrelated manifests for an observation-filtered
+query, and atomically replaces plots/reports. Marking final products available offline can reduce
+cloud hydration delays. These changes do not relax checksum checks or require calibration.
+
+Useful follow-ups include nod-by-nod QA when intermediates are available and support for
+archived pools or explicitly supplied associations when MAST lacks an observation-
 candidate ASN. Spectral stitching and higher-level science analysis remain outside this change.
 
 Official references: [Level-2 rules](https://jwst-pipeline.readthedocs.io/en/latest/jwst/associations/level2_asn_rules.html),

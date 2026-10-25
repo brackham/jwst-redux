@@ -16,4 +16,4 @@ options:
   retention: final
   batch_failure_policy: continue
 qa:
-  enabled: false
+  enabled: true
