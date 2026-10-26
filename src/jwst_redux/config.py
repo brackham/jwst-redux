@@ -23,7 +23,7 @@ DEFAULT_QUICKLOOK_CADENCE_MINUTES = 2.0
 class QueryConfig:
     """Archive-independent target request plus its current MAST matching strategy."""
 
-    target: str
+    target: str | None
     target_match: str
     archive_target_names: tuple[str, ...]
     instrument: str
@@ -31,6 +31,17 @@ class QueryConfig:
     proposal_ids: tuple[str, ...] | None = None
     observation_id: str | None = None
     visit_id: str | None = None
+    grating: str | None = None
+    filter: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Human-readable query scope, also used to label its manifests."""
+        return (
+            self.target
+            or ", ".join(self.archive_target_names)
+            or "Proposal " + ", ".join(self.proposal_ids or ())
+        )
 
 
 @dataclass(frozen=True)
@@ -93,12 +104,24 @@ class WriteConfig:
     spec2_parameter_overrides: dict[str, Any]
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
+    pipeline_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    group_id: str | None = None
     retention: str = "all"
     qa_enabled: bool = False
     quicklook_cadence_minutes: float = DEFAULT_QUICKLOOK_CADENCE_MINUTES
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     )
+
+    resume_target_alias: str | None = None
+
+    def overrides_for(self, pipeline_class: str) -> dict[str, Any]:
+        legacy = {
+            "Detector1Pipeline": self.parameter_overrides,
+            "Spec2Pipeline": self.spec2_parameter_overrides,
+            "Tso3Pipeline": self.tso3_parameter_overrides,
+        }
+        return dict(self.pipeline_overrides.get(pipeline_class, legacy.get(pipeline_class, {})))
 
 
 @dataclass(frozen=True)
@@ -113,12 +136,22 @@ class BatchConfig:
     tso3_parameter_overrides: dict[str, Any]
     overwrite: bool
     failure_policy: str
+    pipeline_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    group_id: str | None = None
     retention: str = "all"
     qa_enabled: bool = False
     quicklook_cadence_minutes: float = DEFAULT_QUICKLOOK_CADENCE_MINUTES
     soss_wavelength_windows: dict[int, tuple[float, float]] = field(
         default_factory=lambda: dict(DEFAULT_SOSS_WAVELENGTH_WINDOWS)
     )
+
+    def overrides_for(self, pipeline_class: str) -> dict[str, Any]:
+        legacy = {
+            "Detector1Pipeline": self.parameter_overrides,
+            "Spec2Pipeline": self.spec2_parameter_overrides,
+            "Tso3Pipeline": self.tso3_parameter_overrides,
+        }
+        return dict(self.pipeline_overrides.get(pipeline_class, legacy.get(pipeline_class, {})))
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -128,6 +161,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         data = yaml.safe_load(handle)
     if not isinstance(data, dict):
         raise TypeError(f"Configuration must contain a YAML mapping: {config_path}")
+    _reject_credentials(data)
     return data
 
 
@@ -153,16 +187,26 @@ def load_discovery_config(path: str | Path) -> DiscoveryConfig:
     if pipeline.get("stages", "auto") != "auto":
         raise ConfigurationError("This milestone only supports pipeline.stages='auto'.")
 
+    proposal_ids = _proposal_ids(query)
+    target = _required_string(query, "target") if "target" in query else None
+    archive_target_names = _archive_target_names(query)
+    if not archive_target_names and not proposal_ids:
+        raise ConfigurationError(
+            "Supply query.target, query.archive_target_names, or query.proposal_id(s)."
+        )
+
     return DiscoveryConfig(
         query=QueryConfig(
-            target=_required_string(query, "target"),
+            target=target,
             target_match=target_match,
-            archive_target_names=_archive_target_names(query),
+            archive_target_names=archive_target_names,
             instrument=_required_string(query, "instrument").upper(),
             exposure_type=_required_string(query, "exposure_type").upper(),
-            proposal_ids=_proposal_ids(query),
+            proposal_ids=proposal_ids,
             observation_id=_optional_identifier(query.get("observation_id")),
             visit_id=_optional_identifier(query.get("visit_id")),
+            grating=_optional_upper_string(query.get("grating")),
+            filter=_optional_upper_string(query.get("filter")),
         ),
         start_from=start_from,
         output_root=Path(_required_string(output, "root")).expanduser(),
@@ -213,7 +257,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
     exposure_id = _required_string(selection, "exposure_id")
     exposure_number = _required_identifier(selection, "exposure_number", width=5)
     detector = _optional_upper_string(selection.get("detector"))
-    if discovery.query.instrument == "NIRSPEC" and detector not in {"NRS1", "NRS2"}:
+    if discovery.query.exposure_type == "NRS_BRIGHTOBJ" and detector not in {"NRS1", "NRS2"}:
         raise ConfigurationError(
             "NIRSpec write configuration requires stage1.selection.detector to be NRS1 or NRS2."
         )
@@ -237,6 +281,7 @@ def load_write_config(path: str | Path) -> WriteConfig:
         parameter_overrides=dict(overrides),
         spec2_parameter_overrides=dict(spec2_overrides),
         tso3_parameter_overrides=dict(tso3_overrides),
+        pipeline_overrides=_pipeline_overrides(pipeline),
         overwrite=overwrite,
         retention=_retention_policy(options),
         qa_enabled=qa_enabled,
@@ -293,6 +338,7 @@ def load_batch_config(path: str | Path) -> BatchConfig:
         parameter_overrides=dict(overrides),
         spec2_parameter_overrides=dict(spec2_overrides),
         tso3_parameter_overrides=dict(tso3_overrides),
+        pipeline_overrides=_pipeline_overrides(pipeline),
         overwrite=overwrite,
         failure_policy=failure_policy,
         retention=_retention_policy(options),
@@ -313,6 +359,8 @@ def write_config_for_exposure(
         parameter_overrides=dict(config.parameter_overrides),
         spec2_parameter_overrides=dict(config.spec2_parameter_overrides),
         tso3_parameter_overrides=dict(config.tso3_parameter_overrides),
+        pipeline_overrides=dict(config.pipeline_overrides),
+        group_id=config.group_id,
         overwrite=config.overwrite,
         retention=config.retention,
         qa_enabled=config.qa_enabled,
@@ -437,10 +485,10 @@ def _quicklook_cadence_minutes(qa: dict[str, Any]) -> float:
 
 
 def _archive_target_names(query: dict[str, Any]) -> tuple[str, ...]:
-    target = _required_string(query, "target")
+    target = _required_string(query, "target") if "target" in query else None
     value = query.get("archive_target_names")
     if value is None:
-        return (target,)
+        return (target,) if target is not None else ()
     return _identifier_list(value, "query.archive_target_names")
 
 
@@ -463,3 +511,37 @@ def _identifier_list(value: Any, field: str) -> tuple[str, ...]:
     if any(identifier is None for identifier in identifiers):
         raise ConfigurationError(f"Configuration field '{field}' cannot contain null values.")
     return tuple(str(identifier) for identifier in identifiers)
+
+
+def _pipeline_overrides(pipeline: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    mappings = pipeline.get("class_overrides", {})
+    supported = {"Detector1Pipeline", "Spec2Pipeline", "Tso3Pipeline", "Spec3Pipeline"}
+    if not isinstance(mappings, dict) or any(
+        name not in supported or not isinstance(value, dict) for name, value in mappings.items()
+    ):
+        raise ConfigurationError(
+            "pipeline.class_overrides must map supported pipeline classes to mappings."
+        )
+    legacy = {
+        "Detector1Pipeline": "overrides",
+        "Spec2Pipeline": "spec2_overrides",
+        "Tso3Pipeline": "tso3_overrides",
+    }
+    if any(name in mappings and key in pipeline for name, key in legacy.items()):
+        raise ConfigurationError(
+            "Do not specify both legacy overrides and class_overrides for the same pipeline."
+        )
+    return {name: dict(value) for name, value in mappings.items()}
+
+
+def _reject_credentials(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in {"token", "mast_api_token", "mast_token", "password"}:
+                raise ConfigurationError(
+                    "Credentials must be supplied through MAST_API_TOKEN, never YAML."
+                )
+            _reject_credentials(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_credentials(item)

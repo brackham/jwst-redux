@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any
@@ -130,7 +131,23 @@ def write_extracted_spectrum_report(
         expected_exposure_type=expected_exposure_type,
         expected_detector=expected_detector,
     )
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return write_report(report, output)
+
+
+def write_report(report: dict[str, Any], output: Path) -> Path:
+    """Write machine-readable QA without permitting non-standard NaN/Infinity literals."""
+    content = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=output.parent, suffix=".json", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        temporary.replace(output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return output
 
 

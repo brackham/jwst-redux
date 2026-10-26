@@ -14,6 +14,8 @@ from typing import Any
 
 from . import __version__
 from .exceptions import JWSTReduxError
+from .file_identity import checksum, file_matches, record_file
+from .security import redact
 
 
 def utc_now() -> str:
@@ -82,7 +84,14 @@ class ManifestStore:
             if entry.get("run_key") != run_key or entry.get("status") != "success":
                 continue
             outputs = entry.get("outputs", [])
-            if outputs and all(_recorded_file_is_intact(output) for output in outputs):
+            if (
+                outputs
+                and all(file_matches(output, self._file_records(data)) for output in outputs)
+                and (
+                    "input_file" not in entry
+                    or file_matches(entry["input_file"], self._file_records(data))
+                )
+            ):
                 return entry
         return None
 
@@ -97,17 +106,120 @@ class ManifestStore:
         for entry in reversed(data["runs"]):
             if entry.get("operation") != operation or entry.get("status") != "success":
                 continue
-            if any(entry.get(key) != value for key, value in required_fields.items()):
+            if any(
+                entry.get(key) != value
+                for key, value in required_fields.items()
+                if key not in {"association", "input_file"}
+            ):
                 continue
             recorded_software = entry.get("software", {})
             if any(
                 recorded_software.get(key) != value for key, value in software_requirements.items()
             ):
                 continue
+            known = self._file_records(data)
+            if "association" in required_fields:
+                old = entry.get("association", {})
+                current = required_fields["association"]
+                if {k: v for k, v in old.items() if k != "member_files"} != {
+                    k: v for k, v in current.items() if k != "member_files"
+                }:
+                    from .associations import equivalent_association_records
+
+                    if not equivalent_association_records(old, current):
+                        continue
+                old_files, current_files = (
+                    old.get("member_files", []),
+                    current.get("member_files", []),
+                )
+                if len(old_files) != len(current_files) or any(
+                    before.get("path") != after.get("path")
+                    or before.get("size_bytes") != after.get("size_bytes")
+                    or not file_matches(before, known)
+                    for before, after in zip(old_files, current_files, strict=True)
+                ):
+                    continue
+            if "input_file" in required_fields:
+                old = entry.get("input_file") or {
+                    "path": entry.get("input_path"),
+                    "size_bytes": entry.get("input_size_bytes")
+                    or entry.get("download", {}).get("size_bytes"),
+                }
+                if old.get("path") != required_fields["input_file"]["path"] or not file_matches(
+                    old, known
+                ):
+                    continue
             outputs = entry.get("outputs", [])
-            if outputs and all(_recorded_file_is_intact(output) for output in outputs):
+            if outputs and all(file_matches(output, known) for output in outputs):
                 return entry
         return None
+
+    @staticmethod
+    def _file_records(data: dict[str, Any]) -> list[dict[str, Any]]:
+        records = []
+        for entry in reversed(data["runs"]):
+            # A running invocation is an observation of today's contents, not
+            # evidence that a previous invocation consumed those contents.
+            if entry.get("status") not in {"success", "skipped"}:
+                continue
+            records.extend(entry.get("outputs", []))
+            if entry.get("input_file"):
+                records.append(entry["input_file"])
+            records.extend(entry.get("association", {}).get("member_files", []))
+            if entry.get("operation") == "checksum_baseline":
+                for item in entry["files"]:
+                    records.extend((item["reference"], item["observed"]))
+        return records
+
+    def file_record(self, path: Path) -> dict[str, Any]:
+        """Capture current content, reusing trustworthy unchanged metadata."""
+        return record_file(path, self._file_records(self._load()))
+
+    def file_is_intact(self, reference: dict[str, Any]) -> bool:
+        return file_matches(reference, self._file_records(self._load()))
+
+    def refreshed_outputs(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
+        """Record verified reuse without rewriting historical success entries."""
+        return [{**item, **self.file_record(Path(item["path"]))} for item in entry["outputs"]]
+
+    def import_checksums(self, baseline: Path) -> int:
+        """Verify an independently recorded baseline and append an audit receipt.
+
+        BASELINE is {"files": [{"path", "size_bytes", "mtime_ns", "sha256"}, ...]}.
+        Callers must supply a trusted snapshot of the earlier files. Computing a
+        new checksum after an unexplained change cannot establish past identity.
+        Only paths already referenced by this manifest are imported, atomically.
+        """
+        data = self._load()
+        paths = {item["path"] for item in self._file_records(data)}
+        paths.update(e["input_path"] for e in data["runs"] if e.get("input_path"))
+        source = json.loads(baseline.read_text())
+        verified = []
+        for reference in source["files"]:
+            if reference["path"] not in paths:
+                continue
+            digest = reference.get("sha256", "")
+            if (
+                len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+                or not isinstance(reference.get("mtime_ns"), int)
+            ):
+                raise JWSTReduxError("Checksum baseline requires SHA-256 and recorded timestamps.")
+            observed = record_file(Path(reference["path"]))
+            if observed["sha256"] != digest or observed["size_bytes"] != reference["size_bytes"]:
+                raise JWSTReduxError(f"Checksum baseline mismatch: {reference['path']}")
+            verified.append({"reference": reference, "observed": observed})
+        if verified:
+            self.append(
+                {
+                    "operation": "checksum_baseline",
+                    "status": "success",
+                    "end_time": utc_now(),
+                    "source": {"path": str(baseline), "sha256": checksum(baseline)},
+                    "files": verified,
+                }
+            )
+        return len(verified)
 
     def entry(self, run_id: str) -> dict[str, Any] | None:
         """Return a manifest entry by run identifier."""
@@ -137,20 +249,9 @@ class ManifestStore:
     def _write(self, data: dict[str, Any]) -> None:
         temporary = self.path.with_name(f"{self.path.name}.tmp")
         with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
+            json.dump(redact(data), handle, indent=2, sort_keys=True)
             handle.write("\n")
         temporary.replace(self.path)
-
-
-def _recorded_file_is_intact(record: dict[str, Any]) -> bool:
-    path = Path(str(record.get("path", "")))
-    expected_size = record.get("size_bytes")
-    return (
-        path.is_file()
-        and isinstance(expected_size, int)
-        and expected_size > 0
-        and path.stat().st_size == expected_size
-    )
 
 
 def _distribution_version(package: str) -> str:

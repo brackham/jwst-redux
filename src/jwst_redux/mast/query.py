@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from ..config import DiscoveryConfig
@@ -33,6 +33,7 @@ JWST_SEARCH_COLUMNS = (
     "grating",
     "detector",
     "subarray",
+    "nirspec_fxd_slit",
     "date_obs",
     "expstart",
     "expend",
@@ -88,6 +89,8 @@ def discover(
                 for exposure in normalized
                 if exposure.instrument == config.query.instrument
                 and exposure.exposure_type == config.query.exposure_type
+                and (config.query.grating is None or exposure.grating == config.query.grating)
+                and (config.query.filter is None or exposure.filter == config.query.filter)
             ),
             key=_exposure_sort_key,
         )
@@ -100,12 +103,23 @@ def discover(
         raise ArchiveQueryError("MAST returned an exposure without fileSetName.")
 
     product_records = archive.list_products([str(exposure_id) for exposure_id in exposure_ids])
-    products = select_starting_products(normalize_products(product_records), config.start_from)
+    normalized_products = normalize_products(product_records)
+    products = select_starting_products(normalized_products, config.start_from)
     if not products:
         raise ArchiveQueryError(
             f"MAST returned no science _{config.start_from} products for the matched exposures."
         )
-    exposures_with_products = attach_products(exposures, products)
+    exposures_with_products = tuple(
+        replace(
+            exposure,
+            association_products=tuple(
+                p
+                for p in normalized_products
+                if p.exposure_id == exposure.exposure_id and p.filename.endswith("_asn.json")
+            ),
+        )
+        for exposure in attach_products(exposures, products)
+    )
     return DiscoveryResult(datasets=build_science_datasets(exposures_with_products))
 
 
@@ -113,11 +127,14 @@ def _mast_criteria(config: DiscoveryConfig) -> dict[str, Any]:
     """Translate the configured target strategy at the archive boundary."""
     query = config.query
     criteria: dict[str, Any] = {
-        "targname": ",".join(query.archive_target_names),
         "instrume": query.instrument,
         "exp_type": query.exposure_type,
         "productLevel": "1b",
     }
+    if query.archive_target_names:
+        criteria["targname"] = ",".join(query.archive_target_names)
+    if query.filter is not None:
+        criteria["filter"] = query.filter
     if query.proposal_ids is not None:
         criteria["program"] = ",".join(query.proposal_ids)
     if query.observation_id is not None:
@@ -133,7 +150,7 @@ def normalize_exposure(record: dict[str, Any]) -> Exposure:
         program_id=_identifier(record.get("program"), width=5),
         observation_id=_identifier(record.get("observtn"), width=3),
         visit_id=_identifier(record.get("visit_id"), width=11),
-        target_name=_text(record.get("targname")),
+        target_name=_text(record.get("targname")) or _text(record.get("targprop")),
         instrument=_upper_text(record.get("instrume")),
         exposure_type=_upper_text(record.get("exp_type")),
         archive_id=_text(record.get("ArchiveFileID")),
@@ -145,11 +162,12 @@ def normalize_exposure(record: dict[str, Any]) -> Exposure:
         grating=_nirspec_grating(record),
         filter=_upper_text(record.get("filter")),
         subarray=_upper_text(record.get("subarray")),
+        fixed_slit=_upper_text(record.get("nirspec_fxd_slit")),
         start_time=_text(record.get("date_obs")),
         duration_seconds=_float(record.get("duration")),
         integration_count=_integer(record.get("nints")),
         group_count=_integer(record.get("ngroups")),
-        segment_count=_integer(record.get("exsegtot")),
+        segment_count=_integer(record.get("exsegtot")) or None,
         access=_upper_text(record.get("access")),
         metadata=dict(record),
     )

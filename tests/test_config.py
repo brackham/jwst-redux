@@ -230,3 +230,35 @@ output:
 
     config_path.write_text(base.format(proposal_ids="[5799, 5863]"), encoding="utf-8")
     assert load_discovery_config(config_path).query.proposal_ids == ("5799", "5863")
+
+
+def test_proposal_only_config_and_target_name_compatibility(tmp_path):
+    import yaml
+
+    source = Path(__file__).parents[1] / "configs" / "go11441.yaml"
+    batch = load_batch_config(source)
+    assert batch.discovery.query.target is None
+    assert batch.discovery.query.archive_target_names == ()
+    assert batch.discovery.query.proposal_ids == ("11441",)
+    assert batch.discovery.query.label == "Proposal 11441"
+    assert batch.discovery.output_root == Path("work/go11441")
+    assert batch.retention == "final" and batch.overwrite is False
+    assert batch.qa_enabled is True and batch.failure_policy == "continue"
+    data = yaml.safe_load(source.read_text())
+    path = tmp_path / "config.yaml"
+    data["query"]["target"] = "Friendly target"
+    path.write_text(yaml.safe_dump(data))
+    assert load_discovery_config(path).query.archive_target_names == ("Friendly target",)
+    data["query"]["archive_target_names"] = ["Archive A", "Archive B"]
+    path.write_text(yaml.safe_dump(data))
+    query = load_discovery_config(path).query
+    assert query.target == "Friendly target"
+    assert query.archive_target_names == ("Archive A", "Archive B")
+    del data["query"]["target"]
+    path.write_text(yaml.safe_dump(data))
+    assert load_discovery_config(path).query.archive_target_names == ("Archive A", "Archive B")
+    del data["query"]["archive_target_names"]
+    del data["query"]["proposal_id"]
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(ConfigurationError, match="Supply query.target"):
+        load_discovery_config(path)

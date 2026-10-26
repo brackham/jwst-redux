@@ -88,6 +88,35 @@ def _compatibility_key(exposure: Exposure, detector: str | None) -> tuple[tuple[
 def _product_branches(exposure: Exposure) -> tuple[tuple[str | None, tuple[Product, ...]], ...]:
     """Partition starting products into mode-appropriate detector branches."""
     mode = observing_mode_for(exposure)
+    if mode.detector_validation_rule:
+        from jwst.associations.lib import dms_base
+
+        rule = getattr(dms_base, mode.detector_validation_rule)
+        required = tuple(
+            detector
+            for detector in ("NRS1", "NRS2")
+            if rule(
+                {
+                    "detector": detector.lower(),
+                    "grating": (exposure.grating or "").lower(),
+                    "filter": (exposure.filter or "").lower(),
+                    "fxd_slit": (exposure.fixed_slit or "").lower(),
+                }
+            )
+        )
+        if not required:
+            raise PlanningError(
+                "No valid fixed-slit detector optical path is defined by installed jwst."
+            )
+        products = tuple(
+            p for p in exposure.products if (p.detector or exposure.detector) in required
+        )
+        missing = set(required) - {p.detector or exposure.detector for p in products}
+        if missing:
+            raise PlanningError(
+                f"Exposure {exposure.exposure_id} lacks required detector products: {sorted(missing)}."
+            )
+        return ((None, products),)
     if not mode.detector_branches:
         return ((None, exposure.products),)
 
@@ -110,6 +139,17 @@ def _product_branches(exposure: Exposure) -> tuple[tuple[str | None, tuple[Produ
 
 def validate_exposure_segments(exposure: Exposure, products: tuple[Product, ...]) -> None:
     """Require one unambiguous starting product for each expected exposure segment."""
+    if observing_mode_for(exposure).execution_scope == "group":
+        detectors = {product.detector or exposure.detector for product in products}
+        if None in detectors:
+            raise PlanningError("Fixed-slit starting products require detector metadata.")
+        if exposure.segment_count not in {None, 1} or any(
+            product.segment_number is not None for product in products
+        ):
+            raise PlanningError("Segmented non-TSO exposures are not supported.")
+        if len(products) != len(detectors):
+            raise PlanningError("Duplicate fixed-slit starting products for a detector.")
+        return
     expected = exposure.segment_count
     segment_numbers = [product.segment_number for product in products]
 

@@ -8,6 +8,7 @@ from typing import Protocol
 
 from ..exceptions import DownloadError
 from ..models import Product
+from ..security import redact
 from .client import MastClient
 
 
@@ -39,7 +40,12 @@ def ensure_downloaded(
     partial = destination.with_name(f"{destination.name}.part")
     partial.unlink(missing_ok=True)
     archive = downloader or MastClient()
-    status, message, _ = archive.download_product(product.uri, partial)
+    try:
+        status, message, _ = archive.download_product(product.uri, partial)
+    except Exception as error:  # noqa: BLE001 - sanitize external transport diagnostics.
+        partial.unlink(missing_ok=True)
+        raise DownloadError(redact(f"MAST download failed: {error}")) from None
+    status, message = redact(status), redact(message)
     if status != "COMPLETE":
         partial.unlink(missing_ok=True)
         raise DownloadError(

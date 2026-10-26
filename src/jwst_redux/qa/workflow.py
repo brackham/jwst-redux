@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,10 +10,11 @@ from typing import Any
 
 from ..config import WriteConfig
 from ..exceptions import JWSTReduxError, QAUnavailableError
-from ..modes import BOTS_MODE, SOSS_MODE
-from ..provenance import ManifestStore, make_run_key, utc_now
+from ..modes import BOTS_MODE, FIXED_SLIT_MODE, SOSS_MODE
+from ..provenance import ManifestStore, make_run_key, software_versions, utc_now
 from ..workspace import Workspace
 from . import QA_SCHEMA_VERSION
+from . import fixedslit as fixedslit_qa
 from . import nirspec as nirspec_qa
 from . import stage1 as stage1_qa
 from . import stage2 as stage2_qa
@@ -107,15 +109,38 @@ def generate_qa(
     unknown = set(stages).difference({"stage1", "stage2", "stage3"})
     if unknown:
         raise JWSTReduxError(f"Unsupported QA stage(s): {', '.join(sorted(unknown))}")
-    workspace = Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
+    if _is_fixedslit(config):
+        from .local import resolve_selected_group
+
+        config = resolve_selected_group(config)
+    workspace = Workspace.for_config(config)
     if not workspace.manifest.is_file():
         raise QAUnavailableError(f"Cannot generate QA without a manifest: {workspace.manifest}")
     workspace.create()
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    if _is_fixedslit(config):
+        from .local import open_group_manifest
+
+        manifest = open_group_manifest(workspace.manifest)
+    else:
+        manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     results: list[QAResult] = []
     for stage in stages:
+        if _is_fixedslit(config):
+            if stage == "stage3":
+                for pipeline_entry, inputs in _fixedslit_products(manifest, config):
+                    results.append(
+                        _generate_one(
+                            manifest,
+                            workspace,
+                            _selection_record(config),
+                            _qa_parameters(config, stage),
+                            stage,
+                            pipeline_entry,
+                            inputs,
+                            force,
+                        )
+                    )
+            continue
         for pipeline_entry, inputs in _pipeline_products(manifest, config, stage):
             plotting_parameters = _qa_parameters(config, stage)
             results.append(
@@ -135,6 +160,40 @@ def generate_qa(
             "No successful pipeline products matched the selected dataset/stage."
         )
     return tuple(results)
+
+
+def _is_fixedslit(config: WriteConfig) -> bool:
+    return (
+        config.discovery.query.instrument,
+        config.discovery.query.exposure_type,
+    ) == FIXED_SLIT_MODE
+
+
+def _fixedslit_products(manifest, config):
+    """Match every official source product in the latest successful group endpoint.
+
+    Do not require pruned association members or unrelated Stage-3 intermediates.
+    Missing partners remain inputs so a failed QA entry is recorded, not skipped.
+    """
+    entries = [
+        e
+        for e in manifest.entries()
+        if e.get("operation") == "stage3"
+        and e.get("status") == "success"
+        and e.get("group_id") == config.group_id
+    ]
+    if not config.group_id or not entries:
+        return []
+    entry = entries[-1]
+    records = entry.get("outputs", [])
+    roots = sorted(
+        {
+            str(r["path"]).removesuffix("_x1d.fits").removesuffix("_s2d.fits")
+            for r in records
+            if str(r.get("path", "")).endswith(("_x1d.fits", "_s2d.fits"))
+        }
+    )
+    return [(entry, (Path(root + "_x1d.fits"), Path(root + "_s2d.fits"))) for root in roots]
 
 
 def _pipeline_products(
@@ -203,13 +262,30 @@ def _generate_one(
 ) -> QAResult:
     product = inputs[0]
     output_dir = qa_subdirectory(workspace.qa(stage), product)
-    input_records = [_file_record(path) for path in inputs]
+    fixedslit = plotting_parameters.get("exposure_type") == FIXED_SLIT_MODE[1]
+    input_error = None
+    if fixedslit:
+        recorded = {r["path"]: r for r in pipeline_entry.get("outputs", [])}
+        try:
+            for path in inputs:
+                if str(path) not in recorded or not manifest.file_is_intact(recorded[str(path)]):
+                    raise JWSTReduxError(f"Missing or changed Stage-3 QA input: {path}")
+            input_records = [manifest.file_record(path) for path in inputs]
+        except (OSError, JWSTReduxError) as error:
+            input_error = error
+            input_records = [recorded.get(str(path), {"path": str(path)}) for path in inputs]
+    else:
+        input_records = [_file_record(path) for path in inputs]
     run_key = make_run_key(
         {
             "operation": "qa",
             "stage": stage,
             "qa_schema_version": QA_SCHEMA_VERSION,
-            "inputs": input_records,
+            "inputs": (
+                [{k: r.get(k) for k in ("path", "size_bytes", "sha256")} for r in input_records]
+                if fixedslit
+                else input_records
+            ),
             "upstream_run_ids": [pipeline_entry["run_id"]],
             "plotting_parameters": plotting_parameters,
         }
@@ -229,20 +305,31 @@ def _generate_one(
         "upstream_successful_run_ids": [pipeline_entry["run_id"]],
         "plotting_parameters": plotting_parameters,
         "output_directory": str(output_dir),
+        **(
+            {"software": software_versions(), "crds_context": pipeline_entry.get("crds_context")}
+            if fixedslit
+            else {}
+        ),
     }
     manifest.append(entry)
-    previous = None if force else manifest.successful_run(run_key)
+    previous = None if force or input_error else manifest.successful_run(run_key)
     if previous is not None:
         manifest.update(
             run_id,
             {
                 "status": "skipped",
                 "end_time": utc_now(),
-                "outputs": previous["outputs"],
+                "outputs": manifest.refreshed_outputs(previous),
                 "resumed_from_run_id": previous["run_id"],
+                **(
+                    {k: previous[k] for k in ("quality_status", "qa_warnings") if k in previous}
+                    if fixedslit
+                    else {}
+                ),
             },
         )
-        _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
+        if not fixedslit:
+            _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
         return QAResult(
             stage,
             "skipped",
@@ -252,10 +339,24 @@ def _generate_one(
             manifest.entry(run_id) or entry,
         )
     try:
+        if input_error:
+            raise input_error
         outputs = _plot(stage, inputs, output_dir, plotting_parameters)
-        records = [_file_record(path) for path in outputs]
-        manifest.update(run_id, {"status": "success", "end_time": utc_now(), "outputs": records})
-        _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
+        records = [{**_file_record(path), **manifest.file_record(path)} for path in outputs]
+        quality = {}
+        if fixedslit:
+            report = json.loads((output_dir / "checks.json").read_text())
+            quality = {
+                "quality_status": report["quality_status"],
+                "qa_warnings": [
+                    w for item in [*report["spectra"], *report["images"]] for w in item["warnings"]
+                ],
+            }
+        manifest.update(
+            run_id, {"status": "success", "end_time": utc_now(), "outputs": records, **quality}
+        )
+        if not fixedslit:
+            _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "success", run_id)
         return QAResult(
             stage,
             "success",
@@ -265,10 +366,34 @@ def _generate_one(
             manifest.entry(run_id) or entry,
         )
     except Exception as error:  # noqa: BLE001 - QA must never invalidate calibration success.
+        diagnostics = {}
+        if fixedslit:
+            report_path = output_dir / "checks.json"
+            if input_error:
+                from .checks import write_report
+
+                write_report(
+                    {
+                        "inputs": input_records,
+                        "warnings": [str(error)],
+                        "checks": {"input_identity_verified": False},
+                    },
+                    report_path,
+                )
+            if report_path.is_file():
+                diagnostics = {"diagnostic_report": manifest.file_record(report_path)}
         manifest.update(
-            run_id, {"status": "failed", "end_time": utc_now(), "error": repr(error), "outputs": []}
+            run_id,
+            {
+                "status": "failed",
+                "end_time": utc_now(),
+                "error": repr(error),
+                "outputs": [],
+                **diagnostics,
+            },
         )
-        _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "failed", run_id)
+        if not fixedslit:
+            _set_pipeline_qa_status(manifest, pipeline_entry["run_id"], "failed", run_id)
         return QAResult(
             stage,
             "failed",
@@ -291,6 +416,8 @@ def _plot(
         str(plotting_parameters["instrument"]),
         str(plotting_parameters["exposure_type"]),
     )
+    if mode == FIXED_SLIT_MODE and stage == "stage3":
+        return fixedslit_qa.generate(inputs[0], inputs[1], output_dir)
     if mode == BOTS_MODE:
         plots = nirspec_qa.generate(
             inputs[0],
@@ -340,6 +467,12 @@ def _file_record(path: Path) -> dict[str, Any]:
 
 def _qa_parameters(config: WriteConfig, stage: str) -> dict[str, Any]:
     """Return generic and mode-specific QA provenance."""
+    if _is_fixedslit(config):
+        return {
+            "instrument": FIXED_SLIT_MODE[0],
+            "exposure_type": FIXED_SLIT_MODE[1],
+            **fixedslit_qa.PARAMETERS,
+        }
     parameters = dict(QA_PARAMETER_BASE[stage])
     parameters.update(
         {

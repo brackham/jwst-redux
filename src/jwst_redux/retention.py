@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WriteConfig
+from .file_identity import file_matches
 from .provenance import ManifestStore, utc_now
 from .workspace import Workspace
 
@@ -40,10 +41,8 @@ def apply_retention(
     ``endpoint`` can become candidates. Every candidate is preflighted before the
     first unlink, and deletion progress is persisted after each file.
     """
-    workspace = Workspace.existing_for_selection(
-        config.discovery.output_root.resolve(), config.selection
-    )
-    manifest = ManifestStore(workspace.manifest, config.discovery.query.target)
+    workspace = Workspace.for_config(config)
+    manifest = ManifestStore(workspace.manifest, config.discovery.query.label)
     candidate_stages = {
         "stage1": (),
         "stage2": ("stage1",),
@@ -175,7 +174,7 @@ def _recorded_files(
                     continue
                 if fits_only and not path.lower().endswith(".fits"):
                     continue
-                found[path] = {"stage": stage, "path": path, "size_bytes": size}
+                found[path] = {**record, "stage": stage, "path": path, "size_bytes": size}
     return tuple(found[path] for path in sorted(found))
 
 
@@ -195,8 +194,16 @@ def _preflight(
         expected_dir = getattr(workspace, stage)
         if stage not in allowed_stages:
             return f"unexpected stage {stage!r} for {path}"
-        if not path.is_absolute() or path.parent != expected_dir:
+        revision_dir = path.parent
+        is_revision = (
+            revision_dir.parent == expected_dir / "revisions"
+            and len(revision_dir.name) == 16
+            and all(c in "0123456789abcdef" for c in revision_dir.name)
+        )
+        if not path.is_absolute() or (path.parent != expected_dir and not is_revision):
             return f"recorded path is outside the expected {stage} directory: {path}"
+        if is_revision and (revision_dir.is_symlink() or revision_dir.parent.is_symlink()):
+            return f"revision directory is a symlink: {revision_dir}"
         if expected_dir.is_symlink():
             return f"expected {stage} directory is a symlink: {expected_dir}"
         if path.is_symlink():
@@ -209,6 +216,8 @@ def _preflight(
             return f"recorded output is not a regular file: {path}"
         if item["size_bytes"] <= 0 or details.st_size != item["size_bytes"]:
             return f"recorded output is missing or changed: {path}"
+        if not file_matches(item):
+            return f"recorded output content could not be verified: {path}"
     return None
 
 

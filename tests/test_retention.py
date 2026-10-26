@@ -333,3 +333,39 @@ def test_cleanup_requires_intact_endpoint_outputs(tmp_path, exposure_records) ->
     assert result.status == "skipped"
     assert "endpoint output verification failed" in str(result.reason)
     assert candidate.read_bytes() == b"candidate"
+
+
+@pytest.mark.parametrize("link_parent", [None, "revisions", "identity"])
+def test_retention_handles_revision_outputs_and_rejects_linked_directories(
+    tmp_path, exposure_records, link_parent
+):
+    config, _ = _case(tmp_path, exposure_records, retention="final")
+    workspace = _workspace(config)
+    workspace.create()
+    ManifestStore(workspace.manifest, config.discovery.query.label).initialize()
+    revision = workspace.stage2 / "revisions" / ("a" * 16)
+    external = tmp_path / "external"
+    external.mkdir()
+    if link_parent == "revisions":
+        revision.parent.symlink_to(external, target_is_directory=True)
+    else:
+        revision.parent.mkdir()
+    if link_parent == "identity":
+        revision.symlink_to(external, target_is_directory=True)
+    else:
+        revision.mkdir()
+    candidate = revision / "science_cal.fits"
+    candidate.write_bytes(b"candidate")
+    endpoint = workspace.stage3 / "spectrum_x1d.fits"
+    endpoint.write_bytes(b"final")
+    records = {
+        "stage2": ({"outputs": [{"path": str(candidate), "size_bytes": 9}]},),
+        "stage3": ({"outputs": [{"path": str(endpoint), "size_bytes": 5}]},),
+    }
+    result = apply_retention(config, "stage3", records, qa_succeeded=True)
+    if link_parent is None:
+        assert result.status == "success" and not candidate.exists()
+    else:
+        assert result.status == "skipped" and candidate.read_bytes() == b"candidate"
+        assert "symlink" in result.reason
+    assert endpoint.read_bytes() == b"final"

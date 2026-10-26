@@ -12,6 +12,7 @@ from rich.table import Table
 
 from .batch import BatchWorkflowResult, PreparedBatch, prepare_batch, run_batch
 from .config import (
+    BatchConfig,
     DiscoveryConfig,
     WriteConfig,
     load_batch_config,
@@ -23,7 +24,10 @@ from .config import (
 from .exceptions import ConfigurationError, JWSTReduxError, QAUnavailableError
 from .mast.query import DiscoveryResult, discover
 from .models import DatasetPlan, Product, ReductionPlan, ScienceDataset
+from .modes import FIXED_SLIT_MODE
 from .planning.resolver import make_reduction_plans
+from .provenance import ManifestStore
+from .qa.local import LocalQABatch, prepare_local_fixedslit_qa
 from .qa.workflow import generate_qa
 from .retention import RetentionResult
 from .stage1 import (
@@ -64,6 +68,19 @@ def search(config: Path) -> None:
     except (JWSTReduxError, OSError, TypeError) as error:
         _abort(error)
     _print_search(discovery_config, result)
+
+
+@app.command()
+def import_checksums(manifest: Path, baseline: Path) -> None:
+    """Verify a trusted earlier checksum BASELINE and append evidence to MANIFEST."""
+    import json
+
+    try:
+        target = json.loads(manifest.read_text())["scientific_target"]
+        count = ManifestStore(manifest, target).import_checksums(baseline)
+    except (JWSTReduxError, OSError, KeyError, ValueError, TypeError) as error:
+        _abort(error)
+    console.print(f"Verified {count} checksum baselines; historical runs preserved.")
 
 
 @app.command()
@@ -155,12 +172,13 @@ def run(
     elif result.stage3_readiness is not None:
         console.print(
             "[green]Stage 3 ready:[/] "
-            f"{len(result.stage3_readiness.calints_inputs)} intact _calints inputs recorded; "
-            "run with --through stage3 to create the association and execute Tso3Pipeline."
+            f"{len(result.stage3_readiness.calibrated_inputs)} intact calibrated inputs recorded; "
+            "run with --through stage3 to create the association and execute the planned pipeline."
         )
     if result.retention is not None:
         _print_retention_result(result.retention)
-    console.print(f"Manifest: {result.segments[0].stage1.log_path.parent.parent / 'manifest.json'}")
+    log_path = result.segments[0].stage1.log_path if result.segments else result.stage3.log_path
+    console.print(f"Manifest: {log_path.parent.parent / 'manifest.json'}")
 
 
 @app.command()
@@ -182,7 +200,17 @@ def qa(
     if all_branches:
         try:
             batch_config = load_batch_config(config)
-            prepared = prepare_batch(batch_config)
+            if (
+                isinstance(batch_config, BatchConfig)
+                and (
+                    batch_config.discovery.query.instrument,
+                    batch_config.discovery.query.exposure_type,
+                )
+                == FIXED_SLIT_MODE
+            ):
+                prepared = prepare_local_fixedslit_qa(batch_config)
+            else:
+                prepared = prepare_batch(batch_config)
         except (JWSTReduxError, OSError, TypeError, ValueError) as error:
             _abort(error)
         if _generate_batch_qa(prepared, stages=stages, force=force):
@@ -203,6 +231,11 @@ def qa(
         console.print(f"[{color}]QA {result.stage} {result.status}[/]: {result.input_paths[0]}")
         for output in result.outputs:
             console.print(f"  {output}")
+        if result.status == "failed":
+            console.print(f"[red]{result.manifest_entry.get('error', 'QA failed')}[/]")
+        _print_qa_warnings(result.manifest_entry)
+    if any(result.status == "failed" for result in results):
+        raise typer.Exit(code=1)
 
 
 def _load_qa_write_config(config: Path) -> WriteConfig:
@@ -220,7 +253,7 @@ def _load_qa_write_config(config: Path) -> WriteConfig:
 
 
 def _generate_batch_qa(
-    prepared: PreparedBatch,
+    prepared: PreparedBatch | LocalQABatch,
     *,
     stages: tuple[str, ...],
     force: bool,
@@ -247,12 +280,18 @@ def _generate_batch_qa(
                 failed = True
             error = result.manifest_entry.get("error") if result.status == "failed" else None
             _print_batch_qa_status(result.stage, result.status, branch.label, error=error)
+            _print_qa_warnings(result.manifest_entry)
             for output in result.outputs:
                 console.print(f"  {output}")
         for requested_stage in requested_stages:
             if requested_stage not in returned_stages:
                 _print_batch_qa_status(requested_stage, "unavailable", branch.label)
     return failed
+
+
+def _print_qa_warnings(entry: dict) -> None:
+    for warning in dict.fromkeys(entry.get("qa_warnings", [])):
+        console.print(f"[yellow]QA quality warning: {warning} (see checks.json)[/]")
 
 
 def _print_batch_qa_status(
@@ -319,12 +358,13 @@ def _print_stage2_result(result: Stage2WorkflowResult, *, pruned: set[Path] | No
 
 
 def _print_stage3_result(result: Stage3WorkflowResult) -> None:
+    pipeline_name = result.manifest_entry["pipeline_class"].rsplit(".", 1)[-1]
     console.print(f"Stage 3 association: {result.association.path}")
     console.print(f"Association SHA-256: {result.association.content_sha256}")
     if result.status == "skipped":
-        console.print("[green]Tso3Pipeline skipped:[/] matching successful manifest run found.")
+        console.print(f"[green]{pipeline_name} skipped:[/] matching successful manifest run found.")
     else:
-        console.print(f"[green]Tso3Pipeline complete[/] in {result.elapsed_seconds:.1f} s")
+        console.print(f"[green]{pipeline_name} complete[/] in {result.elapsed_seconds:.1f} s")
     for output in result.outputs:
         console.print(f"  {output} ({_format_bytes(output.stat().st_size)})")
     console.print(f"CRDS context: {result.crds_context}")
@@ -381,12 +421,12 @@ def run_all(config: Path) -> None:
 
 def _print_search(config: DiscoveryConfig, result: DiscoveryResult) -> None:
     query = config.query
-    console.print(f"[bold]MAST JWST search: {query.target}[/]")
+    console.print(f"[bold]MAST JWST search: {query.label}[/]")
     console.print(
         f"Strategy: {query.target_match}; instrument={query.instrument}; "
         f"EXP_TYPE={query.exposure_type}; productLevel=1b"
     )
-    console.print("Archive target names: " + ", ".join(query.archive_target_names))
+    console.print("Archive target names: " + (", ".join(query.archive_target_names) or "all"))
     programs = "all" if query.proposal_ids is None else ", ".join(query.proposal_ids)
     console.print(f"Proposal/program IDs: {programs}")
     for number, dataset in enumerate(result.datasets, start=1):
@@ -423,7 +463,7 @@ def _print_plan(
     *,
     retention: str = "all",
 ) -> None:
-    console.print(f"[bold]Reduction plan: {config.query.target}[/]")
+    console.print(f"[bold]Reduction plan: {config.query.label}[/]")
     console.print(f"Retention: {retention}")
     reduction_count = sum(len(plan.reductions) for plan in plans)
     console.print(
@@ -485,6 +525,8 @@ def _print_reduction_branch(number: int, reduction_plan: ReductionPlan) -> None:
     stage_table.add_column("Planned flow")
     for stage_number, stage in enumerate(reduction_plan.stages, start=1):
         association = " as one association" if stage.association_required else " independently"
+        if stage.association_scope == "per_science":
+            association = " via one archive association per science input"
         outputs = ", ".join(stage.output_suffixes)
         stage_table.add_row(
             str(stage_number),
@@ -602,6 +644,7 @@ def _dataset_noun(datasets: tuple[ScienceDataset, ...]) -> str:
     labels = {
         ("NIRISS", "NIS_SOSS"): "SOSS dataset",
         ("NIRSPEC", "NRS_BRIGHTOBJ"): "BOTS dataset",
+        ("NIRSPEC", "NRS_FIXEDSLIT"): "Fixed Slit dataset",
     }
     return labels.get((exposure.instrument, exposure.exposure_type), "science dataset")
 

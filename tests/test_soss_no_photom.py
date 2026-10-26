@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -253,9 +252,9 @@ def test_save_hook_is_inert_for_bots(tmp_path):
     assert not list(tmp_path.glob("*.fits"))
 
 
-def test_resume_revalidates_same_size_invalid_spectra(tmp_path, exposure_records, official_spec2):
-    import json
-
+def test_same_size_invalid_spectra_invalidate_resume_and_regenerate(
+    tmp_path, exposure_records, official_spec2
+):
     calls, overrides = official_spec2
     overrides["steps"]["photom"] = {"skip": True}
     config, discovery = _case(tmp_path, exposure_records, segments=(1,))
@@ -274,9 +273,15 @@ def test_resume_revalidates_same_size_invalid_spectra(tmp_path, exposure_records
         hdus[0].header["S_EXTR1D"] = "SKIPPED"
     assert product.stat().st_size == size
     with pytest.raises(PipelineExecutionError, match="not COMPLETE"):
-        run_selected_through(config, **arguments)
-    workspace = Workspace.for_selection(config.discovery.output_root, config.selection)
-    entry = json.loads(workspace.manifest.read_text())["runs"][-1]
-    assert entry["status"] == "failed"
-    assert "cannot resume Spec2Pipeline" in Path(entry["log_path"]).read_text()
-    assert calls == {"extract": 1, "photom": 0}
+        validate_soss_stage2(
+            first.segments[0].stage2.input_path, first.segments[0].stage2.outputs, overrides
+        )
+    # Content validation now rejects this success before the resume-only
+    # semantic guard. Re-extract the invalid spectrum while retaining Detector1.
+    repaired = run_selected_through(config, **arguments)
+    assert repaired.segments[0].stage1.status == "skipped"
+    assert repaired.segments[0].stage2.status == "success"
+    validate_soss_stage2(
+        repaired.segments[0].stage2.input_path, repaired.segments[0].stage2.outputs, overrides
+    )
+    assert calls == {"extract": 2, "photom": 0}

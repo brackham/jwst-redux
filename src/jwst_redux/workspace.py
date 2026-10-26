@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import ExposureSelectionConfig
+from .config import ExposureSelectionConfig, WriteConfig
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,12 @@ class Workspace:
         if legacy.manifest.is_file() and _manifest_matches_selection(legacy.manifest, selection):
             return legacy
         return isolated
+
+    @classmethod
+    def for_config(cls, config: WriteConfig) -> Workspace:
+        if config.group_id:
+            return cls(config.discovery.output_root.resolve() / "groups" / config.group_id)
+        return cls.existing_for_selection(config.discovery.output_root.resolve(), config.selection)
 
     @property
     def raw(self) -> Path:

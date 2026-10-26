@@ -989,8 +989,16 @@ def _finite_float(value: Any) -> float | None:
 
 
 def save_figure(figure: plt.Figure, path: Path) -> Path:
-    """Save and close an inspection-quality PNG."""
-    figure.tight_layout()
-    figure.savefig(path, dpi=PLOT_DPI)
-    plt.close(figure)
+    """Atomically replace a derived PNG, without truncating a prior/cloud plot."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".png", delete=False) as stream:
+            temporary = Path(stream.name)
+        figure.tight_layout()
+        figure.savefig(temporary, dpi=PLOT_DPI)
+        temporary.replace(path)
+    finally:
+        plt.close(figure)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
